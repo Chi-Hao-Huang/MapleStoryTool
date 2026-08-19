@@ -1,0 +1,37 @@
+# 快取與編譯檔
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# 虛擬環境 (Virtual Environments)
+venv/
+.venv/
+env/
+ENV/
+
+# 環境變數與敏感設定檔
+.env
+.env.local
+secrets.json
+
+# IDE 與編輯器設定
+.vscode/
+.idea/
+
+# Jupyter Notebook 暫存檔
+.ipynb_checkpoints/
+
+# 數據集與模型檔案 (常見於 Python Data/AI 專案)
+*.csv
+*.xlsx
+*.parquet
+*.h5
+*.pkl
+*.pth
+*.onnx
+
+
+/debug/
+**/player_tag.png
+**/debug_game_screen.png
