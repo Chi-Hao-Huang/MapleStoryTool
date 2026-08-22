@@ -566,6 +566,7 @@ if __name__ == "__main__":
             # 若未找尋到角色標籤則重新判斷
             if player_target_pos is None:
                 print("警告: 未偵測到玩家位置，重新判斷")
+                keyup_all()
                 time.sleep(main_loop_sleep)
                 continue
 
@@ -596,7 +597,7 @@ if __name__ == "__main__":
                 move_direction = "right"
                 print(f"[跑圖模組] 達到邊界 (X={abs_mm_x})，移動方向為 {move_direction}")
             # 抵達或高於右界，強制向左折返
-            elif abs_mm_x >= 67:
+            elif abs_mm_x >= 65 :   
                 move_direction = "left"
                 print(f"[跑圖模組] 達到邊界 (X={abs_mm_x})，移動方向為 {move_direction}")
 
