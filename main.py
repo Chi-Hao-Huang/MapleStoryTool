@@ -465,7 +465,7 @@ if __name__ == "__main__":
     ]
     
     # 攻擊警戒距離範圍
-    attack_distance_threshold = 300
+    attack_distance_threshold = 250
     
     # 紀錄上次移動時間，初始化為當前時間
     last_move_time = time.time()
@@ -485,7 +485,7 @@ if __name__ == "__main__":
     move_direction = "left"
     
     # 主迴圈執行間隔
-    main_loop_sleep = .1
+    main_loop_sleep = .05
     
     # 實例化定時任務物件
     timed_key_task = TimedKeyTrigger(key='n', interval_seconds=120)
@@ -592,11 +592,11 @@ if __name__ == "__main__":
 
 
             # 抵達或低於左界，強制向右折返
-            if abs_mm_x <= 49:
+            if abs_mm_x <= 60:
                 move_direction = "right"
                 print(f"[跑圖模組] 達到邊界 (X={abs_mm_x})，移動方向為 {move_direction}")
             # 抵達或高於右界，強制向左折返
-            elif abs_mm_x >= 100:
+            elif abs_mm_x >= 67:
                 move_direction = "left"
                 print(f"[跑圖模組] 達到邊界 (X={abs_mm_x})，移動方向為 {move_direction}")
 
@@ -620,16 +620,45 @@ if __name__ == "__main__":
             # 判斷怪物距離與攻擊
             for mx, my in monster_positions:
                 distance = np.hypot(mx - px, my - py)
-                if (
-                    distance <= attack_distance_threshold
-                    and abs(my - py) < 100
-                ):
+                if distance <= attack_distance_threshold and px > mx and move_direction == "left":
                     print(
-                        f"[怪物偵測模組] 怪物接近！距離: {distance:.1f}，攻擊觸發"
+                        f"[怪物偵測模組] 怪物接近！距離: 左側 {distance:.1f}，攻擊觸發"
+                    )
+                    #keyup_all()
+                    pydirectinput.press("shift")
+                    time.sleep(main_loop_sleep)
+                    break
+                
+                elif distance <= attack_distance_threshold and px > mx and move_direction == "right":
+                    print(
+                        f"[怪物偵測模組] 怪物接近！距離: 左側 {distance:.1f}，攻擊觸發"
                     )
                     keyup_all()
-                    pydirectinput.press("a")
+                    pydirectinput.press("left")
+                    pydirectinput.press("shift")
+                    pydirectinput.keyDown(move_direction)
                     time.sleep(main_loop_sleep)
+                    break
+
+                elif distance <= attack_distance_threshold and px < mx and move_direction == "left":
+                    print(
+                        f"[怪物偵測模組] 怪物接近！距離: 右側 {distance:.1f}，攻擊觸發"
+                    )
+                    keyup_all()
+                    pydirectinput.press("right")
+                    pydirectinput.press("shift")
+                    pydirectinput.keyDown(move_direction)
+                    time.sleep(main_loop_sleep)
+                    break
+
+                elif distance <= attack_distance_threshold and px < mx and move_direction == "right":
+                    print(
+                        f"[怪物偵測模組] 怪物接近！距離: 右側 {distance:.1f}，攻擊觸發"
+                    )
+                    #keyup_all()
+                    pydirectinput.press("shift")
+                    pydirectinput.keyDown(move_direction)
+                    time.sleep(main_loop_sleep) 
                     break
 
             # Debug 功能
