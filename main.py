@@ -460,8 +460,8 @@ if __name__ == "__main__":
     
     # 怪物圖片檔名
     template_paths = [
-    'image/mo_00065.png',
-    'image/mo_00059.png',
+    'image/mo_00065-2.png',
+
     ]
     
     # 攻擊警戒距離範圍
@@ -473,7 +473,7 @@ if __name__ == "__main__":
     
     # 定期移動的時間間隔
     if DEBUG:
-        current_move_interval = 1
+        current_move_interval = 1   
     else:
         current_move_interval = random.randint(200, 250)
         
