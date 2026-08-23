@@ -14,6 +14,38 @@ import cv2
 import pydirectinput
 from PIL import Image
 import random
+from dataclasses import dataclass, field
+from typing import List
+
+# ---------------------------------------------------------
+# 設定集中管理
+# ---------------------------------------------------------
+
+@dataclass
+class BotConfig:
+    monsters_threshold: float = 0.8
+    template_paths: List[str] = field(default_factory=lambda: [
+    #    'image/骷髏狗1.png',
+        'image/骷髏狗2.png',
+    ])
+    attack_distance_threshold: int = 260
+    
+    move_center: int = 764
+    main_loop_sleep: float = 0.05
+    minimap_left_bound: int = 55
+    minimap_right_bound: int = 100
+    
+    hp_threshold: float = 10.0
+    mp_threshold: float = 10.0
+    heal_key: str = 'v'
+    rest_key: str = 'x'
+    
+    single_attack_key: str = 'shift'
+    aoe_attack_key: str = 'a'
+    aoe_monster_count: int = 3  # 範圍內達到幾隻怪就改用範圍攻擊
+    
+    debug: bool = False
+
 
 # ---------------------------------------------------------
 # tool
@@ -24,17 +56,20 @@ def activate_window(win):
     ctypes.windll.user32.ShowWindow(hwnd, 5)
     ctypes.windll.user32.SetForegroundWindow(hwnd)
 
-def get_game_window():
-    wins = gw.getWindowsWithTitle('新楓之谷')
-    if not wins: 
+
+def get_game_window(title='新楓之谷'):
+    wins = gw.getWindowsWithTitle(title)
+    if not wins:
         return None
     win = wins[0]
     activate_window(win)
     return win
 
-def keyup_all(keys=['left', 'right']):
+
+def keyup_all(keys=('left', 'right')):
     for key in keys:
         pydirectinput.keyUp(key)
+
 
 # ---------------------------------------------------------
 # HP / SP 判斷模組
@@ -59,25 +94,52 @@ def get_hp_mp_region(win):
     }
     return hp_region, mp_region
 
+
+def crop_region(img, region, win):
+    """依照 region(全螢幕座標) 裁切出相對於視窗的 ROI"""
+    top = region["top"] - win.top
+    left = region["left"] - win.left
+    return img[top: top + region["height"], left: left + region["width"]]
+
+
 def calculate_bar_percentage(img_bgra, color_check_fn):
     """根據傳入的截圖圖像計算百分比"""
     mid_row = img_bgra[img_bgra.shape[0] // 2]
-    filled = 0
-    for px in mid_row:
-        b, g, r, a = px
-        if color_check_fn(r, g, b):
-            filled += 1
-
+    filled = sum(1 for (b, g, r, a) in mid_row if color_check_fn(r, g, b))
     return (filled / len(mid_row)) * 100
 
-    return filled / len(mid_row) * 100
 
 def is_hp_color(r, g, b):
     return r > 150 and g < 100 and b < 100
 
+
 def is_mp_color(r, g, b):
     return b > 150 and r < 100
 
+
+def read_hp_mp(game_img, win):
+    """回傳 (hp_percent, mp_percent)"""
+    hp_region, mp_region = get_hp_mp_region(win)
+    hp_crop = crop_region(game_img, hp_region, win)
+    mp_crop = crop_region(game_img, mp_region, win)
+    hp_percent = calculate_bar_percentage(hp_crop, is_hp_color)
+    mp_percent = calculate_bar_percentage(mp_crop, is_mp_color)
+    return hp_percent, mp_percent
+
+
+def handle_hp_mp(hp_percent, mp_percent, cfg: BotConfig):
+    """依照血量/魔力做出反應 (吃藥 / 坐下休息)"""
+    if hp_percent < cfg.hp_threshold:
+        print(f"警告: HP < {cfg.hp_threshold}%!")
+        pydirectinput.press(cfg.heal_key)
+        time.sleep(0.2)
+
+    if mp_percent < cfg.mp_threshold:
+        print(f"警告: MP < {cfg.mp_threshold}%!")
+        time.sleep(5)
+        pydirectinput.press(cfg.rest_key)
+        time.sleep(5)
+        pydirectinput.press(cfg.rest_key)
 
 
 # ---------------------------------------------------------
@@ -85,9 +147,7 @@ def is_mp_color(r, g, b):
 # ---------------------------------------------------------
 
 def find_player_by_tag(game_screen_bgra, tag_template_path='image/player_tag.png', threshold=0.55):
-    """
-    透過角色名字標籤或勛章來定位角色位置
-    """
+    """透過角色名字標籤或勛章來定位角色位置"""
     tag_template = cv2.imread(tag_template_path, cv2.IMREAD_COLOR)
     if tag_template is None:
         print(f"錯誤: 找不到標籤圖片 {tag_template_path}")
@@ -95,27 +155,22 @@ def find_player_by_tag(game_screen_bgra, tag_template_path='image/player_tag.png
 
     th, tw = tag_template.shape[:2]
     screen_bgr = cv2.cvtColor(game_screen_bgra, cv2.COLOR_BGRA2BGR)
-    
+
     # 避開底部約 100 像素的 UI 儀表板區域
     h, w = screen_bgr.shape[:2]
     roi_bgr = screen_bgr[0:h - 100, :]
 
-    # 模板匹配
     res = cv2.matchTemplate(roi_bgr, tag_template, cv2.TM_CCOEFF_NORMED)
     _, max_val, _, max_loc = cv2.minMaxLoc(res)
 
     if max_val >= threshold:
-        # 取得標籤中心位置
         tag_x = max_loc[0] + tw // 2
         tag_y = max_loc[1] + th // 2
-        
         # 名字標籤在角色下方約 40 像素處
-        player_x = tag_x
-        player_y = tag_y - 40  
-        
-        return (player_x, player_y)
-    
+        return (tag_x, tag_y - 40)
+
     return None
+
 
 # ---------------------------------------------------------
 # 怪物辨識與攻擊模組
@@ -155,19 +210,18 @@ def non_max_suppression_fast_indices(boxes, overlap_thresh=0.3):
 
     return pick
 
+
 def find_monsters(game_screen_bgra, template_paths, threshold=0.5):
     """
     搜尋多種怪物位置，回傳怪物中心點座標列表 [(x1, y1), ...]
     :param template_paths: 圖片路徑列表，例如 ['image/mo1.png', 'image/mo2.png'] 或單一字串
     """
-    # 相容性處理：若傳入單一字串路徑，自動轉為列表
     if isinstance(template_paths, str):
         template_paths = [template_paths]
 
     screen_bgr = cv2.cvtColor(game_screen_bgra, cv2.COLOR_BGRA2BGR)
     rects = []
 
-    # 1. 遍歷每一個怪物模板路徑
     for path in template_paths:
         try:
             pil_img = Image.open(path).convert("RGB")
@@ -177,30 +231,23 @@ def find_monsters(game_screen_bgra, template_paths, threshold=0.5):
             print(f"警告: 載入怪物圖片失敗 {path}, 錯誤原因: {e}")
             continue
 
-        # 產生水平翻轉模板 (向右)
         template_right = cv2.flip(template_left, 1)
         th, tw = template_left.shape[:2]
 
-        # 2. 分別比對向左與向右兩種方向
         for template in [template_left, template_right]:
             res = cv2.matchTemplate(screen_bgr, template, cv2.TM_CCOEFF_NORMED)
             loc = np.where(res >= threshold)
             for pt in zip(*loc[::-1]):
                 x, y = int(pt[0]), int(pt[1])
-                # 將該模板的 (tw, th) 隨座標一併記錄
                 rects.append([x, y, x + tw, y + th, tw, th])
 
     if not rects:
         return []
 
     rects_np = np.array(rects)
-    # 取出前 4 欄 (x1, y1, x2, y2) 丟入 NMS 計算
     boxes_for_nms = rects_np[:, :4]
-    
-    # 3. 使用自訂 NMS 過濾跨模板、跨方向的重疊框
     pick_indices = non_max_suppression_fast_indices(boxes_for_nms, overlap_thresh=0.3)
 
-    # 4. 依據 NMS 留下的框計算各自的中心點
     monsters = []
     for idx in pick_indices:
         x1, y1, x2, y2, tw, th = rects_np[idx]
@@ -208,43 +255,73 @@ def find_monsters(game_screen_bgra, template_paths, threshold=0.5):
 
     return monsters
 
+
+def find_monsters_in_range(monster_positions, player_pos, distance_threshold):
+    """回傳範圍內所有怪物座標列表 (不只最近的一隻)"""
+    px, py = player_pos
+    return [
+        (mx, my) for (mx, my) in monster_positions
+        if np.hypot(mx - px, my - py) <= distance_threshold
+    ]
+
+
+def handle_attack(monsters_in_range, player_pos, move_direction, cfg: BotConfig):
+    """
+    範圍內怪物數量 >= cfg.aoe_monster_count -> 範圍攻擊 (不用轉向)
+    範圍內只有 1 隻 -> 單體攻擊,只能打面向那一側,面向不對要先轉身
+    範圍內沒有怪 -> 不做事
+    """
+    count = len(monsters_in_range)
+    if count == 0:
+        return
+
+    if count >= cfg.aoe_monster_count:
+        print(f"[怪物偵測模組] 範圍內有 {count} 隻怪，範圍攻擊觸發")
+        pydirectinput.press(cfg.aoe_attack_key)
+        return
+
+    # 只有一隻怪 -> 單體攻擊,需要面向判斷
+    px = player_pos[0]
+    monster_x = monsters_in_range[0][0]
+    monster_is_left = px > monster_x
+    facing_matches = (monster_is_left and move_direction == "left") or \
+                      (not monster_is_left and move_direction == "right")
+
+    side_label = "左側" if monster_is_left else "右側"
+
+    if facing_matches:
+        print(f"[怪物偵測模組] 怪物接近！距離{side_label}，單體攻擊觸發")
+        pydirectinput.press(cfg.single_attack_key)
+        
+    else:
+        turn_key = "left" if monster_is_left else "right"
+        print(f"[怪物偵測模組] 怪物接近！距離{side_label}，轉身單體攻擊觸發")
+        keyup_all()
+        pydirectinput.press(turn_key)
+        pydirectinput.press(cfg.single_attack_key)
+        pydirectinput.keyDown(move_direction)
+
+
 # ---------------------------------------------------------
-# 定時移動模組
+# 定時移動模組 (目前主迴圈未使用,保留供未來開啟)
 # ---------------------------------------------------------
 
-def periodic_move(last_move_time, interval_seconds=300, player_target_pos=(0,0), move_center=687, debug=False):
+def periodic_move(last_move_time, interval_seconds=300, player_target_pos=(0, 0), move_center=687, debug=False):
     """達到時間間隔時觸發移動，移動完畢回傳當前時間與新產生的隨機間隔時間"""
     current_time = time.time()
     if current_time - last_move_time >= interval_seconds:
         px, _ = player_target_pos
-        #move_time = random.randint(10, 15) / 300
-
         direction = "left" if px >= move_center else "right"
-        print(
-            f"執行 {interval_seconds} 秒定時移動, 向{direction}移動 1 步"
-        )
-
-        '''
-        pydirectinput.keyDown(direction)
-        time.sleep(move_time)
-        pydirectinput.keyUp(direction)
-        '''
+        print(f"執行 {interval_seconds} 秒定時移動, 向{direction}移動 1 步")
         pydirectinput.press(direction)
-
-        # 重新生成下一次的隨機移動間隔
-        
-        if debug: 
-            new_next_interval = 1
-        
-        else:
-            new_next_interval = random.randint(200, 250)
-
+        new_next_interval = 1 if debug else random.randint(200, 250)
         return current_time, new_next_interval
 
     return last_move_time, interval_seconds
 
+
 # ---------------------------------------------------------
-# 定時技能動模組
+# 定時技能模組
 # ---------------------------------------------------------
 
 class TimedKeyTrigger:
@@ -257,7 +334,7 @@ class TimedKeyTrigger:
         """於 Main Loop 中持續調用，自動檢查並執行按鍵任務"""
         current_time = time.time()
         if current_time - self.last_triggered_time >= self.interval:
-            print(f"[定時技能模組] 達到 {self.interval} 秒間隔，觸發按鍵: 精神強化({self.key})")
+            print(f"[定時技能模組] 達到 {self.interval} 秒間隔，觸發按鍵: {self.key}")
             time.sleep(.5)
             pydirectinput.press(self.key)
             self.last_triggered_time = current_time
@@ -270,9 +347,7 @@ class TimedKeyTrigger:
 # ---------------------------------------------------------
 
 def get_minimap_region(win):
-    """
-    小地圖在遊戲視窗左上角
-    """
+    """小地圖在遊戲視窗左上角"""
     return {
         "left": win.left + 10,
         "top": win.top + 100,
@@ -280,34 +355,24 @@ def get_minimap_region(win):
         "height": 100
     }
 
+
 def find_player_on_minimap(game_img, minimap_region, win):
     """判斷小地圖中玩家位置，並回傳黃點相對座標"""
-    
-    # 裁切小地圖 ROI
-    x1 = minimap_region["left"] - win.left
-    y1 = minimap_region["top"] - win.top
-    x2 = x1 + minimap_region["width"]
-    y2 = y1 + minimap_region["height"]
-    
-    minimap_crop = game_img[y1:y2, x1:x2]
-    
-    # 轉為 BGR 後再轉 HSV
+    minimap_crop = crop_region(game_img, minimap_region, win)
+
     bgr = cv2.cvtColor(minimap_crop, cv2.COLOR_BGRA2BGR)
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    
+
     # 對應 RGB(255, 255, 136) -> HSV 值的精準上下界
     lower_yellow = np.array([25, 100, 200])
     upper_yellow = np.array([35, 255, 255])
-    
+
     mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
-    
-    # 尋找目標輪廓
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
+
     if contours:
-        # 加上「圓點面積大小過濾」(小地圖黃點面積極小，通常在 1 ~ 20 像素之間)
+        # 圓點面積大小過濾 (小地圖黃點面積極小，通常在 1 ~ 20 像素之間)
         valid_contours = [c for c in contours if 1 <= cv2.contourArea(c) <= 25]
-        
         if valid_contours:
             c = max(valid_contours, key=cv2.contourArea)
             M = cv2.moments(c)
@@ -315,36 +380,50 @@ def find_player_on_minimap(game_img, minimap_region, win):
                 cx = int(M["m10"] / M["m00"])
                 cy = int(M["m01"] / M["m00"])
                 return (cx, cy)
-            
+
     return None
 
+
+def get_minimap_player_abs_pos(game_img, win):
+    """回傳小地圖玩家絕對座標 (相對視窗左上),找不到回傳 None"""
+    minimap_region = get_minimap_region(win)
+    minimap_pos = find_player_on_minimap(game_img, minimap_region, win)
+    if not minimap_pos:
+        return None
+    mm_x1 = minimap_region["left"] - win.left
+    mm_y1 = minimap_region["top"] - win.top
+    return (mm_x1 + minimap_pos[0], mm_y1 + minimap_pos[1])
+
+
+def decide_move_direction(abs_mm_x, current_direction, cfg: BotConfig):
+    """依小地圖 X 座標決定是否需要在邊界折返"""
+    if abs_mm_x <= cfg.minimap_left_bound:
+        if current_direction != "right":
+            print(f"[跑圖模組] 達到邊界 (X={abs_mm_x})，移動方向為 right")
+        return "right"
+    elif abs_mm_x >= cfg.minimap_right_bound:
+        if current_direction != "left":
+            print(f"[跑圖模組] 達到邊界 (X={abs_mm_x})，移動方向為 left")
+        return "left"
+    return current_direction
 
 
 # ---------------------------------------------------------
 # debug 模組
 # ---------------------------------------------------------
 
-def save_full_debug_image(win, 
-                          template_path='image/mo_00065.png', 
-                          threshold=0.5, 
-                          attack_radius=300,
-                          player_target_pos=(0,0)):
+def save_full_debug_image(win, template_path='image/mo_00065.png', threshold=0.5,
+                           attack_radius=300, player_target_pos=(0, 0)):
     """擷取全螢幕，繪製除錯圖層並儲存"""
     hp_region, mp_region = get_hp_mp_region(win)
-    minimap_region = get_minimap_region(win) # 取得小地圖區域
-    
-    game_region = {
-        "left": win.left,
-        "top": win.top,
-        "width": win.width,
-        "height": win.height,
-    }
-    
+    minimap_region = get_minimap_region(win)
+
+    game_region = {"left": win.left, "top": win.top, "width": win.width, "height": win.height}
+
     with mss.MSS() as sct:
         screen = np.array(sct.grab(game_region))
         debug_img = cv2.cvtColor(screen, cv2.COLOR_BGRA2BGR)
 
-        # 畫出 HP / MP 區域
         for region, label, color in [
             (hp_region, "HP Bar", (0, 0, 255)),
             (mp_region, "MP Bar", (255, 0, 0)),
@@ -352,94 +431,41 @@ def save_full_debug_image(win,
             x1, y1 = region["left"] - win.left, region["top"] - win.top
             x2, y2 = x1 + region["width"], y1 + region["height"]
             cv2.rectangle(debug_img, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(
-                debug_img,
-                label,
-                (x1, y1 - 5),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                color,
-                1,
-            )
+            cv2.putText(debug_img, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
-        # 畫出小地圖區域與黃點偵測位置
         mm_x1 = minimap_region["left"] - win.left
         mm_y1 = minimap_region["top"] - win.top
         mm_x2 = mm_x1 + minimap_region["width"]
         mm_y2 = mm_y1 + minimap_region["height"]
-        
-        # 畫出小地圖範圍框 (亮青色)
-        cv2.rectangle(debug_img, (mm_x1, mm_y1), (mm_x2, mm_y2), (255, 255, 0), 2)
-        cv2.putText(
-            debug_img,
-            "Minimap ROI",
-            (mm_x1, mm_y1 - 5),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (255, 255, 0),
-            1,
-        )
 
-        # 進行小地圖黃點偵測
+        cv2.rectangle(debug_img, (mm_x1, mm_y1), (mm_x2, mm_y2), (255, 255, 0), 2)
+        cv2.putText(debug_img, "Minimap ROI", (mm_x1, mm_y1 - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+
         minimap_pos = find_player_on_minimap(screen, minimap_region, win)
         if minimap_pos:
-            # 轉換為視窗內的絕對座標 (小地圖左上角 + 相對座標)
             abs_mm_x = mm_x1 + minimap_pos[0]
             abs_mm_y = mm_y1 + minimap_pos[1]
-            
-            # 在黃點位置畫標記
             cv2.circle(debug_img, (abs_mm_x, abs_mm_y), 7, (255, 255, 0), 2)
-            cv2.putText(
-                debug_img,
-                f"Minimap Player ({abs_mm_x},{abs_mm_y})",
-                (mm_x2 + 10, mm_y1 + 20),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (255, 255, 0),
-                1,
-            )
+            cv2.putText(debug_img, f"Minimap Player ({abs_mm_x},{abs_mm_y})",
+                        (mm_x2 + 10, mm_y1 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
         else:
-            cv2.putText(
-                debug_img,
-                "Minimap Player: NOT FOUND",
-                (mm_x2 + 10, mm_y1 + 20),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (0, 0, 255),
-                1,
-            )
+            cv2.putText(debug_img, "Minimap Player: NOT FOUND",
+                        (mm_x2 + 10, mm_y1 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
-        # 畫出角色與攻擊範圍
         player_x, player_y = player_target_pos
-        cv2.circle(
-            debug_img, (player_x, player_y), attack_radius, (0, 255, 255), 1
-        )
+        cv2.circle(debug_img, (player_x, player_y), attack_radius, (0, 255, 255), 1)
         cv2.circle(debug_img, (player_x, player_y), 6, (0, 255, 255), -1)
-        cv2.putText(
-            debug_img,
-            f"Player ({player_x},{player_y})",
-            (player_x + 10, player_y),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (0, 255, 255),
-            1,
-        )
+        cv2.putText(debug_img, f"Player ({player_x},{player_y})", (player_x + 10, player_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
 
-        # 畫出怪物位置
         monsters = find_monsters(screen, template_path, threshold=threshold)
         for idx, (mx, my) in enumerate(monsters):
             dist = np.hypot(mx - player_x, my - player_y)
             color = (255, 0, 255) if dist <= attack_radius else (0, 255, 0)
             cv2.circle(debug_img, (mx, my), 8, color, -1)
-            cv2.putText(
-                debug_img,
-                f"Monster #{idx+1} ({dist:.0f}px)",
-                (mx + 10, my),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                color,
-                2,
-            )
+            cv2.putText(debug_img, f"Monster #{idx+1} ({dist:.0f}px)", (mx + 10, my),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
         cv2.imwrite("debug_game_screen.png", debug_img)
         print("debug_game_screen.png saved.")
@@ -447,48 +473,15 @@ def save_full_debug_image(win,
 
 if __name__ == "__main__":
     """要用系統管理員權限啟動 IDE 才能正確觸發 DirectInput 按鍵"""
-    # DirectInput 全局按鍵時間間隔
     pydirectinput.FAILSAFE = False
     pydirectinput.PAUSE = 0.05
-    
-    #
-    DEBUG = 0
-    
-    # OpenCV 匹配相似度門檻 (0~1)
-    #monsters_threshold = 0.4    # 木面
-    monsters_threshold = 0.8
-    
-    # 怪物圖片檔名
-    template_paths = [
-    'image/mo_00176.png',
-    'image/mo_00195.png',
-    ]
-    
-    # 攻擊警戒距離範圍
-    attack_distance_threshold = 270
-    
-    # 紀錄上次移動時間，初始化為當前時間
-    last_move_time = time.time()
-    
-    
-    # 定期移動的時間間隔
-    if DEBUG:
-        current_move_interval = 1   
-    else:
-        current_move_interval = random.randint(200, 250)
-        
-    # 定期移動中心點
-    move_center = 764
-    
-    # 初始化移動方向
+
+    cfg = BotConfig(debug=False)
+
+    # 迴圈間狀態
     move_direction = "left"
-    
-    # 主迴圈執行間隔
-    main_loop_sleep = .05
-    
-    # 實例化定時技能物件
     timed_key_task = TimedKeyTrigger(key='n', interval_seconds=120)
-    
+
     with mss.MSS() as sct:
         while True:
             win = get_game_window()
@@ -497,195 +490,68 @@ if __name__ == "__main__":
                 time.sleep(1)
                 continue
 
-            game_region = {
-                "left": win.left,
-                "top": win.top,
-                "width": win.width,
-                "height": win.height,
-            }
-
+            game_region = {"left": win.left, "top": win.top, "width": win.width, "height": win.height}
             game_img = np.array(sct.grab(game_region))
-            
-            print("="*50)
-            
-            
+
+            print("=" * 50)
+
             # 定時按鍵觸發
             timed_key_task.update()
             
+            # 撿取道具
             pydirectinput.press('z')
-            
-            # 裁切出 HP/MP 進行辨識
+
+            # HP / MP
             '''
-            hp_region, mp_region = get_hp_mp_region(win)
-            hp_crop = game_img[
-                hp_region["top"]
-                - win.top : hp_region["top"]
-                - win.top
-                + hp_region["height"],
-                hp_region["left"]
-                - win.left : hp_region["left"]
-                - win.left
-                + hp_region["width"],
-            ]
-            mp_crop = game_img[
-                mp_region["top"]
-                - win.top : mp_region["top"]
-                - win.top
-                + mp_region["height"],
-                mp_region["left"]
-                - win.left : mp_region["left"]
-                - win.left
-                + mp_region["width"],
-            ]
-
-            hp_percent = calculate_bar_percentage(hp_crop, is_hp_color)
-            mp_percent = calculate_bar_percentage(mp_crop, is_mp_color)
-
-            if hp_percent < 10:
-                pydirectinput.press('a')
-                time.sleep(0.2)
-
-            if mp_percent < 10:
-                print("警告: MP < 20%! 坐下休息")
-                time.sleep(5)
-                pydirectinput.press('x')
-                time.sleep(5)
-                pydirectinput.press('x')
+            hp_percent, mp_percent = read_hp_mp(game_img, win)
+            handle_hp_mp(hp_percent, mp_percent, cfg)
             print(f"HP: {hp_percent:.1f}%  MP: {mp_percent:.1f}%")
             '''
 
-            # 搜尋怪物與角色
-            monster_positions = find_monsters(
-                game_img, 
-                template_paths, 
-                threshold=monsters_threshold
-            )
+            # 怪物 & 玩家位置
+            monster_positions = find_monsters(game_img, cfg.template_paths, threshold=cfg.monsters_threshold)
             player_target_pos = find_player_by_tag(game_img)
 
-            # 若未找尋到角色標籤則重新判斷
             if player_target_pos is None:
                 print("警告: 未偵測到玩家位置，重新判斷")
                 keyup_all()
-                time.sleep(main_loop_sleep)
+                time.sleep(cfg.main_loop_sleep)
                 continue
 
             px, py = player_target_pos
-            pos_str = ", ".join(f"({x}, {y})" for x, y in monster_positions)
-            
-            # 取得黃點小地圖座標
-            minimap_region = get_minimap_region(win)
-            minimap_pos = find_player_on_minimap(game_img, minimap_region, win)
-            
-            if not minimap_pos:
+
+            # 小地圖玩家座標
+            abs_pos = get_minimap_player_abs_pos(game_img, win)
+            if abs_pos is None:
                 print("警告: 小地圖未偵測到玩家位置，重新判斷")
                 keyup_all()
-                time.sleep(main_loop_sleep)
+                #time.sleep(cfg.main_loop_sleep)
                 continue
-            
-            mm_x1 = minimap_region["left"] - win.left
-            mm_y1 = minimap_region["top"] - win.top
-            
-            abs_mm_x = mm_x1 + minimap_pos[0]
-            abs_mm_y = mm_y1 + minimap_pos[1]
-            
-            print(f"玩家位置: {player_target_pos}, 小地圖座標: ({abs_mm_x}, {abs_mm_y}) , 怪物數: {len(monster_positions)}")
+            abs_mm_x, abs_mm_y = abs_pos
 
+            print(f"玩家位置: {player_target_pos}, 小地圖座標: ({abs_mm_x}, {abs_mm_y}), 怪物數: {len(monster_positions)}")
 
-            # Debug 功能
-            if DEBUG:
+            if cfg.debug:
                 save_full_debug_image(
                     win,
-                    attack_radius=attack_distance_threshold,
-                    template_path=template_paths,
-                    threshold=monsters_threshold,
+                    attack_radius=cfg.attack_distance_threshold,
+                    template_path=cfg.template_paths,
+                    threshold=cfg.monsters_threshold,
                     player_target_pos=player_target_pos,
                 )
+                #time.sleep(cfg.main_loop_sleep)
                 continue
 
-            # 木面 60 ~ 65
-            # 抵達或低於左界，強制向右折返
-            if abs_mm_x <= 55:
-                move_direction = "right"
-                print(f"[跑圖模組] 達到邊界 (X={abs_mm_x})，移動方向為 {move_direction}")
-            # 抵達或高於右界，強制向左折返
-            elif abs_mm_x >= 100 :   
-                move_direction = "left"
-                print(f"[跑圖模組] 達到邊界 (X={abs_mm_x})，移動方向為 {move_direction}")
+            # 邊界折返判斷
+            move_direction = decide_move_direction(abs_mm_x, move_direction, cfg)
 
-                
             keyup_all()
             pydirectinput.keyDown(move_direction)
 
-            
-
-            # 定時移動
-            '''
-            last_move_time, current_move_interval = periodic_move(
-                last_move_time,
-                interval_seconds=current_move_interval,
-                player_target_pos=player_target_pos,
-                move_center=move_center,
-                debug=DEBUG
+            # 找出範圍內所有怪物,依數量決定範圍攻擊或單體攻擊
+            monsters_in_range = find_monsters_in_range(
+                monster_positions, player_target_pos, cfg.attack_distance_threshold
             )
-            '''
+            handle_attack(monsters_in_range, player_target_pos, move_direction, cfg)
 
-            # 判斷怪物距離與攻擊
-            for mx, my in monster_positions:
-                distance = np.hypot(mx - px, my - py)
-                
-                '''
-                if distance <= attack_distance_threshold:
-                    print(
-                        f"[怪物偵測模組] 怪物接近！距離: 左側 {distance:.1f}，攻擊觸發"
-                    )
-                    keyup_all()
-                    pydirectinput.press("a")
-                    #time.sleep(main_loop_sleep)
-                    break
-                '''
-                
-                
-                if distance <= attack_distance_threshold and px > mx and move_direction == "left":
-                    print(
-                        f"[怪物偵測模組] 怪物接近！距離: 左側 {distance:.1f}，攻擊觸發"
-                    )
-                    #keyup_all()
-                    pydirectinput.press("shift")
-                    #time.sleep(main_loop_sleep)
-                    break
-                
-                elif distance <= attack_distance_threshold and px > mx and move_direction == "right":
-                    print(
-                        f"[怪物偵測模組] 怪物接近！距離: 左側 {distance:.1f}，攻擊觸發"
-                    )
-                    keyup_all()
-                    pydirectinput.press("left")
-                    pydirectinput.press("shift")
-                    pydirectinput.keyDown(move_direction)
-                    #time.sleep(main_loop_sleep)
-                    break
-
-                elif distance <= attack_distance_threshold and px < mx and move_direction == "left":
-                    print(
-                        f"[怪物偵測模組] 怪物接近！距離: 右側 {distance:.1f}，攻擊觸發"
-                    )
-                    keyup_all()
-                    pydirectinput.press("right")
-                    pydirectinput.press("shift")
-                    pydirectinput.keyDown(move_direction)
-                    #time.sleep(main_loop_sleep)
-                    break
-
-                elif distance <= attack_distance_threshold and px < mx and move_direction == "right":
-                    print(
-                        f"[怪物偵測模組] 怪物接近！距離: 右側 {distance:.1f}，攻擊觸發"
-                    )
-                    #keyup_all()
-                    pydirectinput.press("shift")
-                    pydirectinput.keyDown(move_direction)
-                    #time.sleep(main_loop_sleep) 
-                    break
-                
-
-
-            #time.sleep(main_loop_sleep)
+            #time.sleep(cfg.main_loop_sleep)
