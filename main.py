@@ -276,7 +276,7 @@ def get_minimap_region(win):
     return {
         "left": win.left + 10,
         "top": win.top + 100,
-        "width": 120,
+        "width": 150,
         "height": 100
     }
 
@@ -388,7 +388,7 @@ def save_full_debug_image(win,
             abs_mm_y = mm_y1 + minimap_pos[1]
             
             # 在黃點位置畫標記
-            cv2.circle(debug_img, (abs_mm_x, abs_mm_y), 7, (255, 255, 0), 1)
+            cv2.circle(debug_img, (abs_mm_x, abs_mm_y), 7, (255, 255, 0), 2)
             cv2.putText(
                 debug_img,
                 f"Minimap Player ({abs_mm_x},{abs_mm_y})",
@@ -452,7 +452,7 @@ if __name__ == "__main__":
     pydirectinput.PAUSE = 0.05
     
     #
-    DEBUG = 0
+    DEBUG = 1
     
     # OpenCV 匹配相似度門檻 (0~1)
     #monsters_threshold = 0.4    # 木面
