@@ -29,21 +29,27 @@ class BotConfig:
         'image/骷髏狗2.png',
     ])
     attack_distance_threshold: int = 260
-    
+
     move_center: int = 764
     main_loop_sleep: float = 0.05
     minimap_left_bound: int = 55
     minimap_right_bound: int = 100
-    
+
     hp_threshold: float = 10.0
     mp_threshold: float = 10.0
     heal_key: str = 'v'
     rest_key: str = 'x'
-    
+
     single_attack_key: str = 'shift'
     aoe_attack_key: str = 'a'
-    aoe_monster_count: int = 3  # 範圍內達到幾隻怪就改用範圍攻擊
-    
+    aoe_monster_count: int = 2  # 範圍內達到幾隻怪就改用範圍攻擊
+
+    # 補師跟隨模組
+    healer_tag_path: str = 'image/healer_tag.png'
+    healer_tag_threshold: float = 0.55
+    healer_y_tolerance: int = 100   # Y座標差在此範圍內視為同一層
+    healer_x_dead_zone: int = 250   # X座標差在此範圍內視為已到達補師旁邊,不再移動
+
     debug: bool = False
 
 
@@ -147,7 +153,10 @@ def handle_hp_mp(hp_percent, mp_percent, cfg: BotConfig):
 # ---------------------------------------------------------
 
 def find_player_by_tag(game_screen_bgra, tag_template_path='image/player_tag.png', threshold=0.55):
-    """透過角色名字標籤或勛章來定位角色位置"""
+    """
+    透過角色名字標籤或勛章來定位角色位置。
+    通用函式:傳入不同的 tag_template_path 就能定位不同角色(自己、補師...等)。
+    """
     tag_template = cv2.imread(tag_template_path, cv2.IMREAD_COLOR)
     if tag_template is None:
         print(f"錯誤: 找不到標籤圖片 {tag_template_path}")
@@ -292,7 +301,7 @@ def handle_attack(monsters_in_range, player_pos, move_direction, cfg: BotConfig)
     if facing_matches:
         print(f"[怪物偵測模組] 怪物接近！距離{side_label}，單體攻擊觸發")
         pydirectinput.press(cfg.single_attack_key)
-        
+
     else:
         turn_key = "left" if monster_is_left else "right"
         print(f"[怪物偵測模組] 怪物接近！距離{side_label}，轉身單體攻擊觸發")
@@ -408,12 +417,42 @@ def decide_move_direction(abs_mm_x, current_direction, cfg: BotConfig):
     return current_direction
 
 
+def decide_move_target(player_pos, healer_pos, abs_mm_x, current_direction, cfg: BotConfig):
+    """
+    決定本次要往哪個方向移動 (或停止)。
+
+    - 若偵測到補師,且補師 Y 座標與玩家 Y 座標相近 (視為同一平台/樓層):
+      改成朝補師的 X 座標靠攏。已經在容忍範圍內就回傳 None (代表停止移動)。
+    - 否則維持原本邊界折返邏輯 (decide_move_direction)。
+
+    回傳值: "left" / "right" / None (None 代表這次不移動)
+    """
+    if healer_pos is not None:
+        player_x, player_y = player_pos
+        healer_x, healer_y = healer_pos
+
+        if abs(player_y - healer_y) <= cfg.healer_y_tolerance:
+            dx = healer_x - player_x
+            if abs(dx) <= cfg.healer_x_dead_zone:
+                print(f"[補師跟隨模組] 已到達補師附近 (dx={dx:.0f})，停止移動")
+                return None
+
+            direction = "right" if dx > 0 else "left"
+            print(f"[補師跟隨模組] 同層偵測到補師 (dx={dx:.0f})，朝 {direction} 移動")
+            return direction
+
+    # 沒偵測到補師 或 不同層 -> 維持原本邊界折返邏輯
+    return decide_move_direction(abs_mm_x, current_direction, cfg)
+
+
 # ---------------------------------------------------------
 # debug 模組
 # ---------------------------------------------------------
 
 def save_full_debug_image(win, template_path='image/mo_00065.png', threshold=0.5,
-                           attack_radius=300, player_target_pos=(0, 0)):
+                           attack_radius=300, player_target_pos=(0, 0),
+                           healer_tag_path=None, healer_threshold=0.55,
+                           healer_y_tolerance=30, healer_x_dead_zone=15):
     """擷取全螢幕，繪製除錯圖層並儲存"""
     hp_region, mp_region = get_hp_mp_region(win)
     minimap_region = get_minimap_region(win)
@@ -454,10 +493,49 @@ def save_full_debug_image(win, template_path='image/mo_00065.png', threshold=0.5
                         (mm_x2 + 10, mm_y1 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
         player_x, player_y = player_target_pos
+        h, w = debug_img.shape[:2]
+
         cv2.circle(debug_img, (player_x, player_y), attack_radius, (0, 255, 255), 1)
         cv2.circle(debug_img, (player_x, player_y), 6, (0, 255, 255), -1)
         cv2.putText(debug_img, f"Player ({player_x},{player_y})", (player_x + 10, player_y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+
+        # 畫出補師位置與跟隨容忍範圍 (橘色系,與玩家的黃色/怪物的桃紅區分)
+        if healer_tag_path:
+            healer_pos = find_player_by_tag(screen, tag_template_path=healer_tag_path, threshold=healer_threshold)
+
+            # 畫出「同層」判定帶: 玩家 Y ± healer_y_tolerance,橫跨整個畫面寬度
+            band_top = player_y - healer_y_tolerance
+            band_bottom = player_y + healer_y_tolerance
+            overlay = debug_img.copy()
+            cv2.rectangle(overlay, (0, band_top), (w, band_bottom), (0, 165, 255), -1)
+            cv2.addWeighted(overlay, 0.15, debug_img, 0.85, 0, debug_img)
+            cv2.line(debug_img, (0, band_top), (w, band_top), (0, 165, 255), 1)
+            cv2.line(debug_img, (0, band_bottom), (w, band_bottom), (0, 165, 255), 1)
+            cv2.putText(debug_img, f"Healer Y-tolerance ({healer_y_tolerance}px)", (10, band_top - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1)
+
+            if healer_pos:
+                healer_x, healer_y = healer_pos
+                cv2.circle(debug_img, (healer_x, healer_y), 6, (0, 165, 255), -1)
+                cv2.putText(debug_img, f"Healer ({healer_x},{healer_y})", (healer_x + 10, healer_y),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1)
+
+                # 畫出「停止移動」死區: 補師 X ± healer_x_dead_zone
+                dz_left = healer_x - healer_x_dead_zone
+                dz_right = healer_x + healer_x_dead_zone
+                cv2.rectangle(debug_img, (dz_left, healer_y - 60), (dz_right, healer_y + 60),
+                              (0, 165, 255), 1)
+                cv2.putText(debug_img, f"Dead zone ({healer_x_dead_zone}px)", (dz_left, healer_y + 75),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 165, 255), 1)
+
+                same_layer = abs(player_y - healer_y) <= healer_y_tolerance
+                status = "SAME LAYER - FOLLOWING" if same_layer else "DIFF LAYER - IGNORED"
+                cv2.putText(debug_img, f"Healer status: {status}", (10, h - 20),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1)
+            else:
+                cv2.putText(debug_img, "Healer: NOT FOUND", (10, h - 20),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1)
 
         monsters = find_monsters(screen, template_path, threshold=threshold)
         for idx, (mx, my) in enumerate(monsters):
@@ -476,7 +554,7 @@ if __name__ == "__main__":
     pydirectinput.FAILSAFE = False
     pydirectinput.PAUSE = 0.05
 
-    cfg = BotConfig(debug=False)
+    cfg = BotConfig()
 
     # 迴圈間狀態
     move_direction = "left"
@@ -497,7 +575,7 @@ if __name__ == "__main__":
 
             # 定時按鍵觸發
             timed_key_task.update()
-            
+
             # 撿取道具
             pydirectinput.press('z')
 
@@ -520,6 +598,13 @@ if __name__ == "__main__":
 
             px, py = player_target_pos
 
+            # 補師位置 (找不到時為 None,屬正常情況,不中止流程)
+            healer_target_pos = find_player_by_tag(
+                game_img,
+                tag_template_path=cfg.healer_tag_path,
+                threshold=cfg.healer_tag_threshold,
+            )
+
             # 小地圖玩家座標
             abs_pos = get_minimap_player_abs_pos(game_img, win)
             if abs_pos is None:
@@ -529,7 +614,8 @@ if __name__ == "__main__":
                 continue
             abs_mm_x, abs_mm_y = abs_pos
 
-            print(f"玩家位置: {player_target_pos}, 小地圖座標: ({abs_mm_x}, {abs_mm_y}), 怪物數: {len(monster_positions)}")
+            print(f"玩家位置: {player_target_pos}, 補師位置: {healer_target_pos}, "
+                  f"小地圖座標: ({abs_mm_x}, {abs_mm_y}), 怪物數: {len(monster_positions)}")
 
             if cfg.debug:
                 save_full_debug_image(
@@ -538,15 +624,26 @@ if __name__ == "__main__":
                     template_path=cfg.template_paths,
                     threshold=cfg.monsters_threshold,
                     player_target_pos=player_target_pos,
+                    healer_tag_path=cfg.healer_tag_path,
+                    healer_threshold=cfg.healer_tag_threshold,
+                    healer_y_tolerance=cfg.healer_y_tolerance,
+                    healer_x_dead_zone=cfg.healer_x_dead_zone,
                 )
                 #time.sleep(cfg.main_loop_sleep)
                 continue
 
-            # 邊界折返判斷
-            move_direction = decide_move_direction(abs_mm_x, move_direction, cfg)
+            # 移動目標判斷:同層有補師 -> 靠攏補師;否則維持邊界折返
+            new_direction = decide_move_target(
+                player_target_pos, healer_target_pos, abs_mm_x, move_direction, cfg
+            )
 
             keyup_all()
-            pydirectinput.keyDown(move_direction)
+            if new_direction is None:
+                # 已到達補師附近,停止左右移動 (角色只能控制 X 座標,故用停止移動表示)
+                pass
+            else:
+                move_direction = new_direction
+                pydirectinput.keyDown(move_direction)
 
             # 找出範圍內所有怪物,依數量決定範圍攻擊或單體攻擊
             monsters_in_range = find_monsters_in_range(
