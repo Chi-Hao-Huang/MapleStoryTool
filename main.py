@@ -602,12 +602,13 @@ if __name__ == "__main__":
                 )
                 continue
 
+            # 木面 60 ~ 65
             # 抵達或低於左界，強制向右折返
-            if abs_mm_x <= 60:
+            if abs_mm_x <= 55:
                 move_direction = "right"
                 print(f"[跑圖模組] 達到邊界 (X={abs_mm_x})，移動方向為 {move_direction}")
             # 抵達或高於右界，強制向左折返
-            elif abs_mm_x >= 65 :   
+            elif abs_mm_x >= 100 :   
                 move_direction = "left"
                 print(f"[跑圖模組] 達到邊界 (X={abs_mm_x})，移動方向為 {move_direction}")
 
@@ -631,6 +632,17 @@ if __name__ == "__main__":
             # 判斷怪物距離與攻擊
             for mx, my in monster_positions:
                 distance = np.hypot(mx - px, my - py)
+                if distance <= attack_distance_threshold:
+                    print(
+                        f"[怪物偵測模組] 怪物接近！距離: 左側 {distance:.1f}，攻擊觸發"
+                    )
+                    keyup_all()
+                    pydirectinput.press("a")
+                    #time.sleep(main_loop_sleep)
+                    break
+                
+                
+                '''
                 if distance <= attack_distance_threshold and px > mx and move_direction == "left":
                     print(
                         f"[怪物偵測模組] 怪物接近！距離: 左側 {distance:.1f}，攻擊觸發"
@@ -671,7 +683,7 @@ if __name__ == "__main__":
                     pydirectinput.keyDown(move_direction)
                     time.sleep(main_loop_sleep) 
                     break
-
+                '''
 
 
             time.sleep(main_loop_sleep)
