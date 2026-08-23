@@ -257,9 +257,8 @@ class TimedKeyTrigger:
         """於 Main Loop 中持續調用，自動檢查並執行按鍵任務"""
         current_time = time.time()
         if current_time - self.last_triggered_time >= self.interval:
-            print(f"[定時技能模組] 達到 {self.interval} 秒間隔，觸發按鍵: 魔心防禦({self.key})")
+            print(f"[定時技能模組] 達到 {self.interval} 秒間隔，觸發按鍵: 精神強化({self.key})")
             time.sleep(.5)
-            #keyup_all()
             pydirectinput.press(self.key)
             self.last_triggered_time = current_time
             return True
@@ -456,12 +455,13 @@ if __name__ == "__main__":
     DEBUG = 0
     
     # OpenCV 匹配相似度門檻 (0~1)
-    monsters_threshold = 0.4
+    #monsters_threshold = 0.4    # 木面
+    monsters_threshold = 0.8
     
     # 怪物圖片檔名
     template_paths = [
-    'image/mo_00065-2.png',
-
+    'image/mo_00176.png',
+    'image/mo_00195.png',
     ]
     
     # 攻擊警戒距離範圍
@@ -478,7 +478,6 @@ if __name__ == "__main__":
         current_move_interval = random.randint(200, 250)
         
     # 定期移動中心點
-    #move_center = 687
     move_center = 764
     
     # 初始化移動方向
@@ -487,7 +486,7 @@ if __name__ == "__main__":
     # 主迴圈執行間隔
     main_loop_sleep = .05
     
-    # 實例化定時任務物件
+    # 實例化定時技能物件
     timed_key_task = TimedKeyTrigger(key='n', interval_seconds=120)
     
     with mss.MSS() as sct:
@@ -592,6 +591,17 @@ if __name__ == "__main__":
             print(f"玩家位置: {player_target_pos}, 小地圖座標: ({abs_mm_x}, {abs_mm_y}) , 怪物數: {len(monster_positions)}")
 
 
+            # Debug 功能
+            if DEBUG:
+                save_full_debug_image(
+                    win,
+                    attack_radius=attack_distance_threshold,
+                    template_path=template_paths,
+                    threshold=monsters_threshold,
+                    player_target_pos=player_target_pos,
+                )
+                continue
+
             # 抵達或低於左界，強制向右折返
             if abs_mm_x <= 60:
                 move_direction = "right"
@@ -662,14 +672,6 @@ if __name__ == "__main__":
                     time.sleep(main_loop_sleep) 
                     break
 
-            # Debug 功能
-            if DEBUG:
-                save_full_debug_image(
-                    win,
-                    attack_radius=attack_distance_threshold,
-                    template_path=template_paths,
-                    threshold=monsters_threshold,
-                    player_target_pos=player_target_pos,
-                )
+
 
             time.sleep(main_loop_sleep)
