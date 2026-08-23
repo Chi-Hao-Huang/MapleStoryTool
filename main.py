@@ -452,7 +452,7 @@ if __name__ == "__main__":
     pydirectinput.PAUSE = 0.05
     
     #
-    DEBUG = 1
+    DEBUG = 0
     
     # OpenCV 匹配相似度門檻 (0~1)
     #monsters_threshold = 0.4    # 木面
@@ -465,7 +465,7 @@ if __name__ == "__main__":
     ]
     
     # 攻擊警戒距離範圍
-    attack_distance_threshold = 250
+    attack_distance_threshold = 270
     
     # 紀錄上次移動時間，初始化為當前時間
     last_move_time = time.time()
@@ -632,6 +632,8 @@ if __name__ == "__main__":
             # 判斷怪物距離與攻擊
             for mx, my in monster_positions:
                 distance = np.hypot(mx - px, my - py)
+                
+                '''
                 if distance <= attack_distance_threshold:
                     print(
                         f"[怪物偵測模組] 怪物接近！距離: 左側 {distance:.1f}，攻擊觸發"
@@ -640,16 +642,16 @@ if __name__ == "__main__":
                     pydirectinput.press("a")
                     #time.sleep(main_loop_sleep)
                     break
-                
-                
                 '''
+                
+                
                 if distance <= attack_distance_threshold and px > mx and move_direction == "left":
                     print(
                         f"[怪物偵測模組] 怪物接近！距離: 左側 {distance:.1f}，攻擊觸發"
                     )
                     #keyup_all()
                     pydirectinput.press("shift")
-                    time.sleep(main_loop_sleep)
+                    #time.sleep(main_loop_sleep)
                     break
                 
                 elif distance <= attack_distance_threshold and px > mx and move_direction == "right":
@@ -660,7 +662,7 @@ if __name__ == "__main__":
                     pydirectinput.press("left")
                     pydirectinput.press("shift")
                     pydirectinput.keyDown(move_direction)
-                    time.sleep(main_loop_sleep)
+                    #time.sleep(main_loop_sleep)
                     break
 
                 elif distance <= attack_distance_threshold and px < mx and move_direction == "left":
@@ -671,7 +673,7 @@ if __name__ == "__main__":
                     pydirectinput.press("right")
                     pydirectinput.press("shift")
                     pydirectinput.keyDown(move_direction)
-                    time.sleep(main_loop_sleep)
+                    #time.sleep(main_loop_sleep)
                     break
 
                 elif distance <= attack_distance_threshold and px < mx and move_direction == "right":
@@ -681,9 +683,9 @@ if __name__ == "__main__":
                     #keyup_all()
                     pydirectinput.press("shift")
                     pydirectinput.keyDown(move_direction)
-                    time.sleep(main_loop_sleep) 
+                    #time.sleep(main_loop_sleep) 
                     break
-                '''
+                
 
 
-            time.sleep(main_loop_sleep)
+            #time.sleep(main_loop_sleep)
