@@ -600,14 +600,12 @@ if __name__ == "__main__":
             px, py = player_target_pos
 
             # 補師位置 (找不到時為 None,屬正常情況,不中止流程)
-            '''
             healer_target_pos = find_player_by_tag(
                 game_img,
                 tag_template_path=cfg.healer_tag_path,
                 threshold=cfg.healer_tag_threshold,
             )
-            '''
-            healer_target_pos = None
+
 
             # 小地圖玩家座標
             abs_pos = get_minimap_player_abs_pos(game_img, win)
