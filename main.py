@@ -28,9 +28,9 @@ class BotConfig:
         'image/骷髏狗2.png',
     #   'image/木面人.png',
     ])
-    attack_distance_threshold: int = 250
-
+    attack_distance_threshold: int = 220
     move_center: int = 764
+
     main_loop_sleep: float = 0.05
     minimap_left_bound: int = 60
     minimap_right_bound: int = 100
@@ -50,7 +50,7 @@ class BotConfig:
     healer_y_tolerance: int = 100   # Y座標差在此範圍內視為同一層
     healer_x_dead_zone: int = 250   # X座標差在此範圍內視為已到達補師旁邊,不再移動
 
-    debug: bool = True
+    debug: bool = False
     debug_show_window: bool = True   # debug 時是否即時顯示監看視窗
     debug_save_image: bool = False   # debug 時是否額外存成檔案
 
