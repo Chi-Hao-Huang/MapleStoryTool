@@ -26,14 +26,15 @@ class BotConfig:
     monsters_threshold: float = 0.8
     template_paths: List[str] = field(default_factory=lambda: [
     #    'image/骷髏狗1.png',
-        'image/骷髏狗2.png',
+    #    'image/骷髏狗2.png',
+        'image/木面人.png',
     ])
     attack_distance_threshold: int = 260
 
     move_center: int = 764
     main_loop_sleep: float = 0.05
-    minimap_left_bound: int = 55
-    minimap_right_bound: int = 100
+    minimap_left_bound: int = 60
+    minimap_right_bound: int = 65
 
     hp_threshold: float = 10.0
     mp_threshold: float = 10.0
@@ -599,11 +600,14 @@ if __name__ == "__main__":
             px, py = player_target_pos
 
             # 補師位置 (找不到時為 None,屬正常情況,不中止流程)
+            '''
             healer_target_pos = find_player_by_tag(
                 game_img,
                 tag_template_path=cfg.healer_tag_path,
                 threshold=cfg.healer_tag_threshold,
             )
+            '''
+            healer_target_pos = None
 
             # 小地圖玩家座標
             abs_pos = get_minimap_player_abs_pos(game_img, win)
@@ -637,9 +641,10 @@ if __name__ == "__main__":
                 player_target_pos, healer_target_pos, abs_mm_x, move_direction, cfg
             )
 
+            
             keyup_all()
             if new_direction is None:
-                # 已到達補師附近,停止左右移動 (角色只能控制 X 座標,故用停止移動表示)
+                # 已到達補師附近,停止左右移動
                 pass
             else:
                 move_direction = new_direction
