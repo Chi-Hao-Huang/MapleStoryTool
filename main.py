@@ -25,16 +25,15 @@ from typing import List
 class BotConfig:
     monsters_threshold: float = 0.8
     template_paths: List[str] = field(default_factory=lambda: [
-    #    'image/骷髏狗1.png',
-    #    'image/骷髏狗2.png',
-        'image/木面人.png',
+        'image/骷髏狗2.png',
+    #   'image/木面人.png',
     ])
-    attack_distance_threshold: int = 260
+    attack_distance_threshold: int = 250
 
     move_center: int = 764
     main_loop_sleep: float = 0.05
     minimap_left_bound: int = 60
-    minimap_right_bound: int = 65
+    minimap_right_bound: int = 100
 
     hp_threshold: float = 10.0
     mp_threshold: float = 10.0
