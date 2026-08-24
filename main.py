@@ -15,7 +15,7 @@ import pydirectinput
 from PIL import Image
 import random
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional, Tuple
 
 # ---------------------------------------------------------
 # 設定集中管理
@@ -50,9 +50,17 @@ class BotConfig:
     healer_y_tolerance: int = 100   # Y座標差在此範圍內視為同一層
     healer_x_dead_zone: int = 250   # X座標差在此範圍內視為已到達補師旁邊,不再移動
 
-    debug: bool = False
-    debug_show_window: bool = False   # debug 時是否即時顯示監看視窗
-    debug_save_image: bool = True   # debug 時是否額外存成檔案
+    debug: bool = True
+    debug_show_window: bool = True   # debug 時是否即時顯示監看視窗
+    debug_save_image: bool = False   # debug 時是否額外存成檔案
+
+    # ---- 效能相關設定 ----
+    # 每隔多少個 tick 重新搶一次遊戲視窗焦點 (0 = 只在啟動時搶一次,之後不再搶)
+    reactivate_interval_ticks: int = 200
+    # 角色/補師標籤的局部搜尋半徑(像素)。上次有偵測到位置時,只在該位置附近搜尋,
+    # 找不到才退回全螢幕搜尋,可大幅降低 matchTemplate 的運算量。
+    player_search_margin: int = 150
+    healer_search_margin: int = 200
 
 
 # ---------------------------------------------------------
@@ -65,18 +73,25 @@ def activate_window(win):
     ctypes.windll.user32.SetForegroundWindow(hwnd)
 
 
-def get_game_window(title='新楓之谷'):
+def get_game_window(title='新楓之谷', activate=False):
+    """
+    取得遊戲視窗物件。
+    activate=True 時才會呼叫 SetForegroundWindow 搶焦點 -- 這個系統呼叫較慢,
+    平常每個 tick 只需要更新視窗座標,不需要每次都搶焦點。
+    """
     wins = gw.getWindowsWithTitle(title)
     if not wins:
         return None
     win = wins[0]
-    activate_window(win)
+    if activate:
+        activate_window(win)
     return win
 
 
 def keyup_all(keys=('left', 'right')):
+    # 放開按鍵是否成功不影響時序精準度,略過內建 pause 節省時間
     for key in keys:
-        pydirectinput.keyUp(key)
+        pydirectinput.keyUp(key, _pause=False)
 
 
 # ---------------------------------------------------------
@@ -152,36 +167,102 @@ def handle_hp_mp(hp_percent, mp_percent, cfg: BotConfig):
 
 
 # ---------------------------------------------------------
+# 模板快取 (避免每個 tick 都重新讀檔+解碼)
+# ---------------------------------------------------------
+
+_TAG_TEMPLATE_CACHE = {}      # path -> 灰階 template (np.ndarray) 或 None
+_MONSTER_TEMPLATE_CACHE = {}  # path -> (gray_left, gray_right, tw, th) 或 None
+
+
+def _load_tag_template(path):
+    """讀取並快取單一標籤(角色/補師)模板的灰階版本"""
+    if path not in _TAG_TEMPLATE_CACHE:
+        template = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+        if template is None:
+            print(f"錯誤: 找不到標籤圖片 {path}")
+        _TAG_TEMPLATE_CACHE[path] = template
+    return _TAG_TEMPLATE_CACHE[path]
+
+
+def _load_monster_templates(path):
+    """讀取並快取怪物模板的灰階版本 (含左右翻轉)"""
+    if path not in _MONSTER_TEMPLATE_CACHE:
+        try:
+            pil_img = Image.open(path).convert("L")  # 直接轉灰階
+            gray_left = np.array(pil_img)
+            gray_right = cv2.flip(gray_left, 1)
+            th, tw = gray_left.shape[:2]
+            _MONSTER_TEMPLATE_CACHE[path] = (gray_left, gray_right, tw, th)
+        except Exception as e:
+            print(f"警告: 載入怪物圖片失敗 {path}, 錯誤原因: {e}")
+            _MONSTER_TEMPLATE_CACHE[path] = None
+    return _MONSTER_TEMPLATE_CACHE[path]
+
+
+def _build_search_roi(prev_pos, screen_shape, margin):
+    """依照上次偵測到的位置,算出一個較小的搜尋範圍 (x1, y1, x2, y2)"""
+    if prev_pos is None:
+        return None
+    x, y = prev_pos
+    h, w = screen_shape[:2]
+    x1 = max(0, x - margin)
+    x2 = min(w, x + margin)
+    y1 = max(0, y - margin)
+    y2 = min(h, y + margin)
+    return (x1, y1, x2, y2)
+
+
+# ---------------------------------------------------------
 # 角色位置辨識模組
 # ---------------------------------------------------------
 
-def find_player_by_tag(game_screen_bgra, tag_template_path='image/player_tag.png', threshold=0.55):
+def find_player_by_tag(game_screen_gray, tag_template_path='image/player_tag.png',
+                        threshold=0.55, search_region=None):
     """
-    透過角色名字標籤或勛章來定位角色位置。
+    透過角色名字標籤或勛章來定位角色位置 (灰階比對)。
     通用函式:傳入不同的 tag_template_path 就能定位不同角色(自己、補師...等)。
+
+    search_region: 可選的 (x1, y1, x2, y2),只在這個範圍內搜尋以加速比對。
+                    未提供時搜尋全螢幕(避開底部約 100 像素的 UI 儀表板區域)。
     """
-    tag_template = cv2.imread(tag_template_path, cv2.IMREAD_COLOR)
+    tag_template = _load_tag_template(tag_template_path)
     if tag_template is None:
-        print(f"錯誤: 找不到標籤圖片 {tag_template_path}")
         return None
 
     th, tw = tag_template.shape[:2]
-    screen_bgr = cv2.cvtColor(game_screen_bgra, cv2.COLOR_BGRA2BGR)
+    h, w = game_screen_gray.shape[:2]
 
-    # 避開底部約 100 像素的 UI 儀表板區域
-    h, w = screen_bgr.shape[:2]
-    roi_bgr = screen_bgr[0:h - 100, :]
+    if search_region is not None:
+        x1, y1, x2, y2 = search_region
+    else:
+        x1, y1, x2, y2 = 0, 0, w, h - 100
 
-    res = cv2.matchTemplate(roi_bgr, tag_template, cv2.TM_CCOEFF_NORMED)
+    roi = game_screen_gray[y1:y2, x1:x2]
+    if roi.shape[0] < th or roi.shape[1] < tw:
+        return None
+
+    res = cv2.matchTemplate(roi, tag_template, cv2.TM_CCOEFF_NORMED)
     _, max_val, _, max_loc = cv2.minMaxLoc(res)
 
     if max_val >= threshold:
-        tag_x = max_loc[0] + tw // 2
-        tag_y = max_loc[1] + th // 2
+        tag_x = x1 + max_loc[0] + tw // 2
+        tag_y = y1 + max_loc[1] + th // 2
         # 名字標籤在角色下方約 40 像素處
         return (tag_x, tag_y - 40)
 
     return None
+
+
+def locate_tag_with_fallback(game_screen_gray, tag_template_path, threshold, prev_pos, margin):
+    """
+    先在「上次位置附近」小範圍搜尋 (快);找不到才退回全螢幕搜尋 (慢,用來重新定位)。
+    大部分 tick 角色/補師位置變化不大,這樣可以省下大部分的運算量。
+    """
+    region = _build_search_roi(prev_pos, game_screen_gray.shape, margin)
+    pos = find_player_by_tag(game_screen_gray, tag_template_path, threshold, search_region=region)
+    if pos is None and region is not None:
+        pos = find_player_by_tag(game_screen_gray, tag_template_path, threshold, search_region=None)
+    return pos
 
 
 # ---------------------------------------------------------
@@ -223,31 +304,25 @@ def non_max_suppression_fast_indices(boxes, overlap_thresh=0.3):
     return pick
 
 
-def find_monsters(game_screen_bgra, template_paths, threshold=0.5):
+def find_monsters(game_screen_gray, template_paths, threshold=0.5):
     """
     搜尋多種怪物位置，回傳怪物中心點座標列表 [(x1, y1), ...]
+    灰階比對版本,模板已預先快取,不再每個 tick 重新讀檔。
     :param template_paths: 圖片路徑列表，例如 ['image/mo1.png', 'image/mo2.png'] 或單一字串
     """
     if isinstance(template_paths, str):
         template_paths = [template_paths]
 
-    screen_bgr = cv2.cvtColor(game_screen_bgra, cv2.COLOR_BGRA2BGR)
     rects = []
 
     for path in template_paths:
-        try:
-            pil_img = Image.open(path).convert("RGB")
-            template_rgb = np.array(pil_img)
-            template_left = cv2.cvtColor(template_rgb, cv2.COLOR_RGB2BGR)
-        except Exception as e:
-            print(f"警告: 載入怪物圖片失敗 {path}, 錯誤原因: {e}")
+        cached = _load_monster_templates(path)
+        if cached is None:
             continue
+        gray_left, gray_right, tw, th = cached
 
-        template_right = cv2.flip(template_left, 1)
-        th, tw = template_left.shape[:2]
-
-        for template in [template_left, template_right]:
-            res = cv2.matchTemplate(screen_bgr, template, cv2.TM_CCOEFF_NORMED)
+        for template in (gray_left, gray_right):
+            res = cv2.matchTemplate(game_screen_gray, template, cv2.TM_CCOEFF_NORMED)
             loc = np.where(res >= threshold)
             for pt in zip(*loc[::-1]):
                 x, y = int(pt[0]), int(pt[1])
@@ -311,7 +386,7 @@ def handle_attack(monsters_in_range, player_pos, move_direction, cfg: BotConfig)
         keyup_all()
         pydirectinput.press(turn_key)
         pydirectinput.press(cfg.single_attack_key)
-        pydirectinput.keyDown(move_direction)
+        pydirectinput.keyDown(move_direction, _pause=False)
 
 
 # ---------------------------------------------------------
@@ -457,13 +532,14 @@ def build_debug_image(win, screen, template_path='image/mo_00065.png', threshold
                        healer_tag_path=None, healer_threshold=0.55,
                        healer_y_tolerance=30, healer_x_dead_zone=15):
     """
-    根據傳入的 screen(已經截好的畫面) 繪製除錯圖層,回傳 debug_img。
-    不負責截圖、不負責存檔/顯示 -- 純粹畫圖,方便存檔或即時顯示共用同一份邏輯。
+    根據傳入的 screen(已經截好的 BGRA 畫面) 繪製除錯圖層,回傳 debug_img。
+    debug 模式著重可讀性而非效能,因此這裡仍用全螢幕搜尋,不套用 ROI 加速。
     """
     hp_region, mp_region = get_hp_mp_region(win)
     minimap_region = get_minimap_region(win)
 
     debug_img = cv2.cvtColor(screen, cv2.COLOR_BGRA2BGR)
+    screen_gray = cv2.cvtColor(screen, cv2.COLOR_BGRA2GRAY)
 
     for region, label, color in [
         (hp_region, "HP Bar", (0, 0, 255)),
@@ -504,7 +580,7 @@ def build_debug_image(win, screen, template_path='image/mo_00065.png', threshold
 
     # 畫出補師位置與跟隨容忍範圍 (橘色系,與玩家的黃色/怪物的桃紅區分)
     if healer_tag_path:
-        healer_pos = find_player_by_tag(screen, tag_template_path=healer_tag_path, threshold=healer_threshold)
+        healer_pos = find_player_by_tag(screen_gray, tag_template_path=healer_tag_path, threshold=healer_threshold)
 
         # 畫出「同層」判定帶: 玩家 Y ± healer_y_tolerance,橫跨整個畫面寬度
         band_top = player_y - healer_y_tolerance
@@ -539,7 +615,7 @@ def build_debug_image(win, screen, template_path='image/mo_00065.png', threshold
             cv2.putText(debug_img, "Healer: NOT FOUND", (10, h - 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1)
 
-    monsters = find_monsters(screen, template_path, threshold=threshold)
+    monsters = find_monsters(screen_gray, template_path, threshold=threshold)
     for idx, (mx, my) in enumerate(monsters):
         dist = np.hypot(mx - player_x, my - player_y)
         color = (255, 0, 255) if dist <= attack_radius else (0, 255, 0)
@@ -571,25 +647,41 @@ if __name__ == "__main__":
     # 迴圈間狀態
     move_direction = "left"
     timed_key_task = TimedKeyTrigger(key='n', interval_seconds=120)
+    tick_count = 0
+
+    # 上次偵測到的角色/補師位置,用來做局部搜尋加速
+    last_player_pos: Optional[Tuple[int, int]] = None
+    last_healer_pos: Optional[Tuple[int, int]] = None
+
+    # 啟動時搶一次焦點
+    win = get_game_window(activate=True)
 
     with mss.MSS() as sct:
         while True:
-            win = get_game_window()
+            tick_count += 1
+
+            # 只更新視窗座標,不搶焦點 (省下 SetForegroundWindow 的開銷)
+            win = get_game_window(activate=False)
             if not win:
                 print("找不到遊戲視窗")
                 time.sleep(1)
                 continue
 
+            # 安全網: 每隔一段 tick 數重新搶一次焦點,避免使用者不慎切走視窗
+            if cfg.reactivate_interval_ticks and tick_count % cfg.reactivate_interval_ticks == 0:
+                activate_window(win)
+
             game_region = {"left": win.left, "top": win.top, "width": win.width, "height": win.height}
             game_img = np.array(sct.grab(game_region))
+            game_img_gray = cv2.cvtColor(game_img, cv2.COLOR_BGRA2GRAY)
 
             print("=" * 50)
 
             # 定時按鍵觸發
             timed_key_task.update()
 
-            # 撿取道具
-            pydirectinput.press('z')
+            # 撿取道具 (非關鍵時序,略過內建 pause)
+            pydirectinput.press('z', _pause=False)
 
             # HP / MP
             '''
@@ -598,9 +690,14 @@ if __name__ == "__main__":
             print(f"HP: {hp_percent:.1f}%  MP: {mp_percent:.1f}%")
             '''
 
-            # 怪物 & 玩家位置
-            monster_positions = find_monsters(game_img, cfg.template_paths, threshold=cfg.monsters_threshold)
-            player_target_pos = find_player_by_tag(game_img)
+            # 怪物位置 (全螢幕搜尋,怪物會到處出現,無法用 ROI 加速)
+            monster_positions = find_monsters(game_img_gray, cfg.template_paths, threshold=cfg.monsters_threshold)
+
+            # 角色位置: 先在上次位置附近找,找不到才退回全螢幕搜尋
+            player_target_pos = locate_tag_with_fallback(
+                game_img_gray, 'image/player_tag.png', 0.55,
+                last_player_pos, cfg.player_search_margin
+            )
 
             if player_target_pos is None:
                 print("警告: 未偵測到玩家位置，重新判斷")
@@ -608,14 +705,16 @@ if __name__ == "__main__":
                 time.sleep(cfg.main_loop_sleep)
                 continue
 
+            last_player_pos = player_target_pos
             px, py = player_target_pos
 
             # 補師位置 (找不到時為 None,屬正常情況,不中止流程)
-            healer_target_pos = find_player_by_tag(
-                game_img,
-                tag_template_path=cfg.healer_tag_path,
-                threshold=cfg.healer_tag_threshold,
+            healer_target_pos = locate_tag_with_fallback(
+                game_img_gray, cfg.healer_tag_path, cfg.healer_tag_threshold,
+                last_healer_pos, cfg.healer_search_margin
             )
+            if healer_target_pos is not None:
+                last_healer_pos = healer_target_pos
 
             # 小地圖玩家座標
             abs_pos = get_minimap_player_abs_pos(game_img, win)
@@ -660,7 +759,7 @@ if __name__ == "__main__":
                 pass
             else:
                 move_direction = new_direction
-                pydirectinput.keyDown(move_direction)
+                pydirectinput.keyDown(move_direction, _pause=False)
 
             # 找出範圍內所有怪物,依數量決定範圍攻擊或單體攻擊
             monsters_in_range = find_monsters_in_range(
