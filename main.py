@@ -23,11 +23,12 @@ from typing import List, Optional, Tuple
 
 @dataclass
 class BotConfig:
-    monsters_threshold: float = 0.8
+    monsters_threshold: float = 0.82
     template_paths: List[str] = field(default_factory=lambda: [
         'image/骷髏狗2.png',
     #   'image/木面人.png',
     ])
+    player_threshold: float = 0.6
     attack_distance_threshold: int = 220
     move_center: int = 764
 
@@ -46,17 +47,17 @@ class BotConfig:
 
     # 補師跟隨模組
     healer_tag_path: str = 'image/healer_tag.png'
-    healer_tag_threshold: float = 0.55
+    healer_tag_threshold: float = 0.6
     healer_y_tolerance: int = 100   # Y座標差在此範圍內視為同一層
-    healer_x_dead_zone: int = 250   # X座標差在此範圍內視為已到達補師旁邊,不再移動
+    healer_x_dead_zone: int = 100   # X座標差在此範圍內視為已到達補師旁邊,不再移動
 
     debug: bool = False
-    debug_show_window: bool = True   # debug 時是否即時顯示監看視窗
-    debug_save_image: bool = False   # debug 時是否額外存成檔案
+    debug_show_window: bool = False   # debug 時是否即時顯示監看視窗
+    debug_save_image: bool = True   # debug 時是否額外存成檔案
 
     # ---- 效能相關設定 ----
     # 每隔多少個 tick 重新搶一次遊戲視窗焦點 (0 = 只在啟動時搶一次,之後不再搶)
-    reactivate_interval_ticks: int = 200
+    reactivate_interval_ticks: int = 1
     # 角色/補師標籤的局部搜尋半徑(像素)。上次有偵測到位置時,只在該位置附近搜尋,
     # 找不到才退回全螢幕搜尋,可大幅降低 matchTemplate 的運算量。
     player_search_margin: int = 150
@@ -695,7 +696,7 @@ if __name__ == "__main__":
 
             # 角色位置: 先在上次位置附近找,找不到才退回全螢幕搜尋
             player_target_pos = locate_tag_with_fallback(
-                game_img_gray, 'image/player_tag.png', 0.55,
+                game_img_gray, 'image/player_tag.png', cfg.player_threshold,
                 last_player_pos, cfg.player_search_margin
             )
 
