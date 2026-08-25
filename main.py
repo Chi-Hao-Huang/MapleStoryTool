@@ -23,18 +23,23 @@ from typing import List, Optional, Tuple
 
 @dataclass
 class BotConfig:
+    main_loop_sleep: float = 0.05
     monsters_threshold: float = 0.82
     template_paths: List[str] = field(default_factory=lambda: [
-        'image/骷髏狗2.png',
-    #   'image/木面人.png',
+    #    'image/骷髏狗2.png',
+       'image/木面人.png',
     ])
     player_threshold: float = 0.6
     attack_distance_threshold: int = 220
     move_center: int = 764
 
-    main_loop_sleep: float = 0.05
+    # 骷髏狗
     minimap_left_bound: int = 60
     minimap_right_bound: int = 100
+    
+    # 木面
+    minimap_left_bound: int = 55
+    minimap_right_bound: int = 70
 
     hp_threshold: float = 10.0
     mp_threshold: float = 10.0
@@ -49,6 +54,7 @@ class BotConfig:
     healer_tag_path: str = 'image/healer_tag.png'
     healer_tag_threshold: float = 0.6
     healer_y_tolerance: int = 100   # Y座標差在此範圍內視為同一層
+    healer_y_tolerance: int = -100   # 木面@@@
     healer_x_dead_zone: int = 100   # X座標差在此範圍內視為已到達補師旁邊,不再移動
 
     debug: bool = False
@@ -350,6 +356,7 @@ def find_monsters_in_range(monster_positions, player_pos, distance_threshold):
     return [
         (mx, my) for (mx, my) in monster_positions
         if np.hypot(mx - px, my - py) <= distance_threshold
+        and abs(my-py) < 100    # 木面 @@@
     ]
 
 
@@ -703,6 +710,7 @@ if __name__ == "__main__":
             if player_target_pos is None:
                 print("警告: 未偵測到玩家位置，重新判斷")
                 keyup_all()
+                pydirectinput.press('alt')
                 time.sleep(cfg.main_loop_sleep)
                 continue
 
@@ -728,6 +736,12 @@ if __name__ == "__main__":
 
             print(f"玩家位置: {player_target_pos}, 補師位置: {healer_target_pos}, "
                   f"小地圖座標: ({abs_mm_x}, {abs_mm_y}), 怪物數: {len(monster_positions)}")
+
+
+            # 木面@@@
+            if abs_mm_y >= 150:
+                cfg.minimap_right_bound = 100
+                cfg.minimap_left_bound = 40
 
             if cfg.debug:
                 debug_img = build_debug_image(
