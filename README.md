@@ -1,35 +1,49 @@
 # 新楓之谷 (MapleStory) 自動化輔助程式
 
-本專案是一個基於 Python 開發的《新楓之谷》自動化輔助腳本。利用 **OpenCV** 影像識別、**MSS** 高速螢幕擷取以及 **pydirectinput** 模擬底層 DirectInput 按鍵輸入，實現角色自動跑圖、怪物偵測攻擊、定時技能施放與小地圖邊界判斷。
+本專案是一個基於 Python 開發的《新楓之谷》自動化輔助腳本。利用 **OpenCV** 影像識別、**MSS** 高速螢幕擷取以及 **pydirectinput** 模擬底層 DirectInput 按鍵輸入，實現角色自動跑圖、怪物偵測攻擊、補師跟隨、定時技能施放、小地圖邊界判斷，並在偵測到斷線時自動執行重新登入流程。
 
 ---
 
 ## 🛠️ 主要功能模組
 
 1. **視窗與工具模組 (Window & Tool Utility)**
+   - 通用視窗尋找函式 (`get_window`)，支援標題精準匹配與模糊匹配（例如 Chrome 分頁標題會變動）。
    - 自動尋找並將《新楓之谷》遊戲視窗置頂與啟用 (`activate_window`, `get_game_window`)。
    - 提供按鍵狀態重置功能 (`keyup_all`)。
+   - 效能優化：主迴圈每個 tick 只更新視窗座標，僅每隔 `reactivate_interval_ticks` 個 tick 才重新搶一次前景焦點，降低 `SetForegroundWindow` 呼叫開銷。
 
-2. **角色位置辨識模組 (Player Location Module)**
-   - 透過角色頭頂/腳下的名字標籤或勛章模板圖片 (`player_tag.png`) 進行 OpenCV 模板匹配 (`find_player_by_tag`)，精準定位角色於遊戲畫面中的 $(x, y)$ 座標。
+2. **角色 / 補師位置辨識模組 (Tag Detection Module)**
+   - 通用標籤比對函式 (`find_player_by_tag`)，透過名字標籤或勛章模板圖片進行 OpenCV 模板匹配，可重複用來定位角色本人或補師 (`healer_tag.png`)。
+   - 局部搜尋加速 (`locate_tag_with_fallback`)：優先在「上次偵測到的位置」附近的小範圍 ROI 搜尋，找不到才退回全螢幕搜尋重新定位，大幅降低 `matchTemplate` 運算量。
+   - 模板圖片會快取於記憶體 (`_TAG_TEMPLATE_CACHE` / `_MONSTER_TEMPLATE_CACHE`)，避免每個 tick 重複讀檔解碼。
 
 3. **怪物辨識與攻擊模組 (Monster Detection & Attack Module)**
-   - 支援多種怪物模板圖片比對，自動涵蓋**左轉與右轉 (水平翻轉)** 兩種姿態。
-   - 引入 **非極大值抑制 (NMS - Non-Maximum Suppression)** 演算法過濾重疊的偵測框，確保怪物座標的準確性。
-   - 自動計算角色與怪物的歐式距離與垂直高低差，於攻擊範圍內觸發攻擊按鍵。
+   - 支援多種怪物模板圖片比對（`BotConfig.template_paths`），自動涵蓋**左轉與右轉 (水平翻轉)** 兩種姿態。
+   - 引入**非極大值抑制 (NMS)** 演算法過濾重疊的偵測框，確保怪物座標的準確性。
+   - 依範圍內怪物數量自動切換攻擊方式：達到 `aoe_monster_count` 隻以上觸發範圍攻擊 (`aoe_attack_key`)；只有 1 隻則轉身面向後使用單體攻擊 (`single_attack_key`)。
 
 4. **小地圖巡航與跑圖模組 (Minimap & Patrol Module)**
-   - 擷取小地圖 ROI，利用 **HSV 色彩空間** 篩選出代表玩家位置的黃點 (`RGB(255, 255, 136)`)。
-   - 設有地圖邊界檢測機制（例如 $X \le 49$ 向右折返，$X \ge 100$ 向左折返），實現地圖內的自動來回巡航。
+   - 擷取小地圖 ROI，利用 **HSV 色彩空間** 篩選出代表玩家位置的黃點。
+   - 依 `minimap_left_bound` / `minimap_right_bound` 設有地圖邊界檢測機制，實現地圖內的自動來回巡航；亦可依小地圖 Y 座標動態切換不同樓層的邊界值（多層地圖）。
 
-5. **定時技能模組 (Timed Skill Trigger)**
-   - 採用物件導向設計 (`TimedKeyTrigger`)，可獨立設定特定技能（如魔心防禦）的冷卻時間與自動觸發間隔。
+5. **補師跟隨模組 (Healer Follow Module)**
+   - 同時比對補師標籤位置，若判定與玩家在同一樓層（Y 座標差在 `healer_y_tolerance` 內），會改為朝補師 X 座標靠攏移動，進入 `healer_x_dead_zone` 死區後停止移動；找不到補師或不同層時則退回原本的邊界折返巡邏邏輯 (`decide_move_target`)。
 
-6. **HP / MP 狀態監測模組 (Status Gauge Module)**
-   - 可對遊戲下方血條與魔力條區域進行 RGBA 色彩百分比計算，自動判斷狀態並觸發補血或休息（目前可於主迴圈開啟/關閉）。
+6. **定時技能模組 (Timed Skill Trigger)**
+   - 採用物件導向設計 (`TimedKeyTrigger`)，可獨立設定特定技能的冷卻時間與自動觸發間隔。
 
-7. **視覺化除錯模組 (Debug Visualizer)**
-   - `save_full_debug_image` 函式可繪製全螢幕的偵測標記，包括 HP/MP 框、小地圖 ROI、玩家中心點、攻擊警戒半徑及怪物定位點，並輸出為 `debug_game_screen.png` 供調校使用。
+7. **斷線重連模組 (Reconnect Module)**
+   - 透過模板比對持續偵測畫面是否出現斷線通知 (`is_disconnected`)。
+   - 偵測到斷線後自動：強制關閉舊的遊戲進程 (`force_close_game`) → 開啟/喚醒 Chrome 並依比例座標點擊登入官網、gamapass 登入、選擇角色 → 等待伺服器選擇畫面出現 → 選伺服器、選頻道、進入遊戲。
+   - 具備重試機制（`max_reconnect_attempts` 輪、每輪間隔 `retry_backoff_seconds` 秒），連續失敗達門檻會自動停止腳本以避免無限重試，並提示需要人工介入。
+   - 所有點擊座標皆以「目標視窗寬高比例」而非桌面絕對座標計算，換解析度時較不易失準；開啟 `debug_click_screenshots` 可在每次點擊前存一張標記十字準心的截圖，方便校正比例。
+
+8. **HP / MP 狀態監測模組 (Status Gauge Module)** — 目前主迴圈未啟用（程式碼保留供未來開啟）
+   - 可對遊戲下方血條與魔力條區域進行 RGBA 色彩百分比計算，自動判斷狀態並觸發補血或休息 (`read_hp_mp`, `handle_hp_mp`)。
+
+9. **視覺化除錯模組 (Debug Visualizer)**
+   - `build_debug_image` 會繪製全畫面的偵測標記，包括 HP/MP 框、小地圖 ROI 與玩家黃點、角色中心點與攻擊警戒半徑、補師同層判定帶與跟隨死區、每隻怪物的距離標註。
+   - `cfg.debug = True` 時主迴圈會改走除錯分支（不執行實際移動/攻擊）；`debug_show_window` 可即時顯示監看視窗，`debug_save_image` 會輸出為 `debug_game_screen.png`。
 
 ---
 
@@ -40,18 +54,21 @@
 ```mermaid
 flowchart TD
     Main[Main Loop 主迴圈] --> Tool[視窗與工具模組<br>Tool Utility]
-    Main --> Player[角色位置辨識模組<br>Player Detection]
+    Main --> Reconnect[斷線重連模組<br>ReconnectManager]
+    Main --> Tag[角色/補師位置辨識模組<br>Tag Detection + 局部搜尋加速]
     Main --> Monster[怪物辨識與攻擊模組<br>Monster Detection & NMS]
     Main --> Minimap[小地圖巡航模組<br>Minimap Tracker]
+    Main --> Healer[補師跟隨模組<br>Healer Follow]
     Main --> TimedSkill[定時技能模組<br>TimedKeyTrigger]
-    Main --> Status[HP/MP 狀態監測模組<br>Gauge Calculator]
     Main --> Debug[視覺化除錯模組<br>Debug Visualizer]
 
     Tool --> DirectInput[pydirectinput 按鍵驅動]
-    Player --> OpenCV[OpenCV 模板匹配 matchTemplate]
+    Reconnect --> PyAutoGUI[pyautogui 比例座標點擊]
+    Reconnect --> TaskKill[taskkill / tasklist 進程控制]
+    Tag --> OpenCV[OpenCV 模板匹配 matchTemplate]
     Monster --> NMS[自訂 NMS 非極大值抑制]
     Minimap --> HSV[HSV 黃點顏色遮罩 inRange]
-    Status --> RGB[中線像素顏色比對]
+    Healer --> Minimap
 ```
 
 ---
@@ -62,41 +79,50 @@ flowchart TD
 flowchart TD
     Start([啟動程式]) --> AdminCheck{是否以系統管理員<br>權限執行？}
     AdminCheck -- 否 --> Warning[鍵盤輸入可能失效]
-    AdminCheck -- 是 --> Init[初始化參數與 TimedKeyTrigger]
+    AdminCheck -- 是 --> Init[初始化 BotConfig / ReconnectConfig / TimedKeyTrigger]
 
     Init --> WinCheck{取得遊戲視窗<br>get_game_window}
     WinCheck -- 失敗 --> SleepWin[等待 1 秒] --> WinCheck
-    WinCheck -- 成功 --> GrabScreen[MSS 擷取全螢幕畫面]
+    WinCheck -- 成功 --> Reactivate{達到 reactivate_interval_ticks？}
+    Reactivate -- 是 --> Focus[搶前景焦點]
+    Reactivate -- 否 --> GrabScreen
+    Focus --> GrabScreen[MSS 擷取遊戲視窗畫面]
 
-    GrabScreen --> Task1[1. 執行定時技能檢查<br>TimedKeyTrigger.update]
-    Task1 --> Task2[2. 執行預設撿物按鍵 z]
-    
-    Task2 --> Task3[3. 辨識怪物與角色位置]
-    Task3 --> FindPlayer{找到角色標籤？}
-    
-    FindPlayer -- 否 --> SkipLoop[警告並跳過本輪 sleep 0.1s] --> WinCheck
-    FindPlayer -- 是 --> FindMinimap{小地圖找到黃點？}
+    GrabScreen --> DisconnectCheck{畫面比對<br>是否顯示斷線通知？}
+    DisconnectCheck -- 是 --> Reconnect[keyup_all + ReconnectManager.handle_reconnect<br>關閉舊進程→開Chrome登入→選角→選服→進頻道]
+    Reconnect --> ResetPos[重置局部搜尋座標] --> WinCheck
+    DisconnectCheck -- 否 --> Task1[定時技能檢查 TimedKeyTrigger.update]
 
-    FindMinimap -- 否 --> KeyUpAll[KeyUp 所有按鍵] --> SkipLoop
-    FindMinimap -- 是 --> BorderCheck{檢查小地圖 X 座標<br>地圖邊界判斷}
+    Task1 --> Task2[執行撿物按鍵 z]
+    Task2 --> Task3[全螢幕搜尋怪物位置 + NMS]
+    Task3 --> FindPlayer{局部/全螢幕搜尋<br>找到角色標籤？}
 
-    BorderCheck -- X <= 49 --> MoveRight[設定移動方向 = right]
-    BorderCheck -- X >= 100 --> MoveLeft[設定移動方向 = left]
-    BorderCheck -- 其他 --> KeepMove[保持當前移動方向]
+    FindPlayer -- 否 --> SkipLoop[keyup_all + 按 alt 重新判斷] --> WinCheck
+    FindPlayer -- 是 --> FindHealer[局部/全螢幕搜尋補師標籤<br>找不到視為正常]
+    FindHealer --> FindMinimap{小地圖找到黃點？}
 
-    MoveRight --> ExecMove[按壓對應方向鍵]
-    MoveLeft --> ExecMove
-    KeepMove --> ExecMove
+    FindMinimap -- 否 --> KeyUpAll[keyup_all] --> WinCheck
+    FindMinimap -- 是 --> DebugBranch{cfg.debug 開啟？}
 
-    ExecMove --> MonsterCheck{範圍內有怪物？<br>dist <= 300 & dy < 100}
-    MonsterCheck -- 是 --> Attack[keyup_all + 按壓攻擊鍵 A]
-    MonsterCheck -- 否 --> DebugCheck
+    DebugBranch -- 是 --> SaveDebug[build_debug_image<br>顯示/存檔後 continue] --> WinCheck
+    DebugBranch -- 否 --> DecideMove{同層偵測到補師？}
 
-    Attack --> DebugCheck{DEBUG 模式開啟？}
-    DebugCheck -- 是 --> SaveDebug[產生 debug_game_screen.png] --> LoopSleep[Sleep main_loop_sleep]
-    DebugCheck -- 否 --> LoopSleep
+    DecideMove -- 是 --> FollowHealer[朝補師 X 座標靠攏<br>已在死區內則停止移動]
+    DecideMove -- 否 --> BorderCheck[依小地圖 X 座標邊界折返]
 
-    LoopSleep --> WinCheck
+    FollowHealer --> ExecMove[keyup_all + 依方向 keyDown]
+    BorderCheck --> ExecMove
+
+    ExecMove --> MonsterCheck{範圍內怪物數量}
+    MonsterCheck -- ">= aoe_monster_count" --> AoeAttack[範圍攻擊鍵]
+    MonsterCheck -- "== 1 且需轉身" --> TurnAttack[轉身 + 單體攻擊鍵]
+    MonsterCheck -- "== 1 且面向正確" --> SingleAttack[單體攻擊鍵]
+    MonsterCheck -- "0" --> LoopEnd
+
+    AoeAttack --> LoopEnd([回到迴圈開頭])
+    TurnAttack --> LoopEnd
+    SingleAttack --> LoopEnd
+    LoopEnd --> WinCheck
 ```
 
 ---
@@ -108,7 +134,7 @@ flowchart TD
 請先確保安裝 Python 3.8+，並執行以下指令安裝依賴套件：
 
 ```bash
-pip install numpy opencv-python mss pygetwindow pydirectinput pillow
+pip install numpy opencv-python mss pygetwindow pydirectinput pyautogui pillow
 ```
 
 ### 2. 目錄結構需求
@@ -117,12 +143,16 @@ pip install numpy opencv-python mss pygetwindow pydirectinput pillow
 
 ```text
 .
-├── main.py                   # 主程式腳本
-├── README.md                 # 專案說明文件
+├── main.py                          # 主程式腳本
+├── README.md                        # 專案說明文件
 └── image/
-    ├── player_tag.png        # 角色名字標籤 / 勛章模板
-    ├── mo_00065.png          # 怪物 1 辨識模板
-    └── mo_00059.png          # 怪物 2 辨識模板
+    ├── player_tag.png               # 角色名字標籤 / 勛章模板
+    ├── healer_tag.png               # 補師名字標籤模板 (補師跟隨模組用)
+    ├── disconnect_notice.png        # 斷線通知對話框特徵
+    ├── chrome_header_feature.png    # 官網 Chrome 分頁特徵 (重連流程用)
+    ├── server_select_feature.png    # 遊戲「伺服器選擇」畫面特徵
+    ├── disconnect_character.png     # 斷線後選角畫面特徵
+    └── mo_XXXXX.png / 怪物名稱.png   # 各種怪物辨識模板 (可依 BotConfig.template_paths 增減)
 ```
 
 ---
@@ -133,5 +163,14 @@ pip install numpy opencv-python mss pygetwindow pydirectinput pillow
    - 由於 `pydirectinput` 需要驅動遊戲底層的 DirectInput 介面，**必須以系統管理員權限**開啟 命令提示字元 (CMD)、PowerShell 或 IDE (如 VS Code / PyCharm) 執行該程式，否則遊戲內無法收到按鍵訊號。
 
 2. **座標與解析度微調**：
-   - **HP/MP 條與小地圖位置**：每個人的螢幕解析度或遊戲 UI 設定可能有所差異。若欲開啟 HP/MP 監測或小地圖黃點偵測，建議先將 `DEBUG = 1` 執行一次，檢視產生的 `debug_game_screen.png` 確保框選區域準確。
-   - **地圖巡航邊界**：請根據當前掛機地圖的小地圖邊界，調整 `abs_mm_x <= 49` 與 `abs_mm_x >= 100` 之數值。
+   - **HP/MP 條、小地圖與怪物攻擊範圍**：每個人的螢幕解析度或遊戲 UI 設定可能有所差異。建議先將 `BotConfig.debug = True` 執行一次，檢視產生的 `debug_game_screen.png`（或開啟 `debug_show_window` 即時查看）確保框選區域準確。
+   - **地圖巡航邊界**：請根據當前掛機地圖的小地圖邊界，調整 `BotConfig.minimap_left_bound` 與 `minimap_right_bound`。若地圖有多層，可參考主迴圈中依 `abs_mm_y` 動態切換邊界值的寫法自行擴充。
+   - **補師跟隨**：需先準備補師的名字標籤模板圖並設定 `healer_tag_path`，並依實際狀況調整 `healer_y_tolerance`（同層判定容忍度）與 `healer_x_dead_zone`（停止跟隨死區）。
+
+3. **斷線重連設定**：
+   - `ReconnectConfig` 中的各項 `_ratio` 皆為「相對於 Chrome / 遊戲視窗寬高的比例座標」，並非桌面絕對座標，更換解析度或視窗大小時通常不需重新校正；若登入頁面改版或比例跑掉，可暫時開啟 `debug_click_screenshots = True`，每次點擊前都會存一張標記十字準心的截圖以利重新校正。
+   - `reconnect_url`、`game_process_name`、`game_window_title` 等需依實際遊戲版本與捷徑設定調整。
+   - 連續重連失敗達 `max_consecutive_reconnect_failures` 次後，主迴圈會自動停止並印出提示，避免程式無限重試，此時需人工檢查登入流程是否有變動。
+
+4. **設定集中管理**：
+   - 所有可調參數集中於 `BotConfig`（一般掛機行為）與 `ReconnectConfig`（斷線重連流程）兩個 dataclass 中，修改參數不需更動主要邏輯程式碼。
