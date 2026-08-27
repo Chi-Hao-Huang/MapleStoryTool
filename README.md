@@ -42,8 +42,16 @@
    - 可對遊戲下方血條與魔力條區域進行 RGBA 色彩百分比計算，自動判斷狀態並觸發補血或休息 (`read_hp_mp`, `handle_hp_mp`)。
 
 9. **視覺化除錯模組 (Debug Visualizer)**
-   - `build_debug_image` 會繪製全畫面的偵測標記，包括 HP/MP 框、小地圖 ROI 與玩家黃點、角色中心點與攻擊警戒半徑、補師同層判定帶與跟隨死區、每隻怪物的距離標註。
+   - `build_debug_image` 會繪製全畫面的偵測標記，包括 HP/MP 框、小地圖 ROI 與玩家黃點、角色中心點與攻擊警戒半徑、補師同層判定帶與跟隨死區、每隻怪物的距離標註，以及下方 10. 的圖層/繩索校正輔助線。
    - `cfg.debug = True` 時主迴圈會改走除錯分支（不執行實際移動/攻擊）；`debug_show_window` 可即時顯示監看視窗，`debug_save_image` 會輸出為 `debug_game_screen.png`。
+
+10. **跨平台爬繩模組 (Rope Traverser)**
+    - 由於主畫面座標會隨鏡頭捲動而改變，此模組完全以**小地圖座標**（不受鏡頭影響）判斷平台與繩索位置。
+    - 用 `LayerConfig` 定義地圖有哪些平台圖層：小地圖 Y 座標範圍 + 該層專屬的左右巡邏邊界；用 `RopeConfig` 定義每條繩索的小地圖 X 座標，以及它連接的上/下層 index。兩者集中設定在 `BotConfig.layers` / `BotConfig.ropes`。
+    - `RopeTraverser` 狀態機負責跨多個 tick 執行「左右對齊繩索 X 座標 → 按住 `climb_up_key` 往上爬 / 按住 `drop_down_key` 再點 `drop_jump_key` 直接掉落到下層 → 偵測小地圖 Y 座標進入目標層範圍即完成」，完成前主迴圈的一般巡邏與攻擊判斷會暫時讓位給它。
+    - 主迴圈依目前所在圖層計算該層的巡邏邊界，並在角色小地圖 X 座標接近某條繩索時（`rope_x_tolerance`）觸發爬繩/掉落，藉此讓角色依序走遍地圖上所有已設定的平台並持續打怪；`min_seconds_between_climbs` 避免剛完成動作又立刻折返、`post_transition_cooldown` 讓爬繩/掉落動畫播完再恢復巡邏判斷、`climb_timeout_seconds` 則是卡住時的逾時保護。
+    - 若 `cfg.layers` 保持空清單，此模組完全不介入，行為會退回原本單層 `minimap_left_bound` / `minimap_right_bound` 巡邏（向後相容既有設定）。
+    - **校正方式**：開啟 `cfg.debug = True` 並在 `cfg.layers` / `cfg.ropes` 填入初步猜測值，執行後查看 `debug_game_screen.png` 上小地圖 ROI 內以綠色框標出的圖層 Y 範圍、以紅色直線標出的繩索 X 座標，對照小地圖實際的平台與繩索位置反覆微調座標即可。
 
 ---
 
@@ -60,6 +68,7 @@ flowchart TD
     Main --> Minimap[小地圖巡航模組<br>Minimap Tracker]
     Main --> Healer[補師跟隨模組<br>Healer Follow]
     Main --> TimedSkill[定時技能模組<br>TimedKeyTrigger]
+    Main --> RopeMod[跨平台爬繩模組<br>RopeTraverser]
     Main --> Debug[視覺化除錯模組<br>Debug Visualizer]
 
     Tool --> DirectInput[pydirectinput 按鍵驅動]
@@ -69,6 +78,7 @@ flowchart TD
     Monster --> NMS[自訂 NMS 非極大值抑制]
     Minimap --> HSV[HSV 黃點顏色遮罩 inRange]
     Healer --> Minimap
+    RopeMod --> Minimap
 ```
 
 ---
@@ -164,7 +174,8 @@ pip install numpy opencv-python mss pygetwindow pydirectinput pyautogui pillow
 
 2. **座標與解析度微調**：
    - **HP/MP 條、小地圖與怪物攻擊範圍**：每個人的螢幕解析度或遊戲 UI 設定可能有所差異。建議先將 `BotConfig.debug = True` 執行一次，檢視產生的 `debug_game_screen.png`（或開啟 `debug_show_window` 即時查看）確保框選區域準確。
-   - **地圖巡航邊界**：請根據當前掛機地圖的小地圖邊界，調整 `BotConfig.minimap_left_bound` 與 `minimap_right_bound`。若地圖有多層，可參考主迴圈中依 `abs_mm_y` 動態切換邊界值的寫法自行擴充。
+   - **地圖巡航邊界**：請根據當前掛機地圖的小地圖邊界，調整 `BotConfig.minimap_left_bound` 與 `minimap_right_bound`。
+   - **多層地圖跨平台爬繩**：若地圖有多個平台需要靠繩索往返（見上方模組 10.），在 `BotConfig.layers` 填入每層的小地圖 Y 範圍與該層邊界、在 `BotConfig.ropes` 填入每條繩索的小地圖 X 座標與連接的圖層 index，再開啟 `debug` 模式對照 `debug_game_screen.png` 上的校正輔助線微調座標。
    - **補師跟隨**：需先準備補師的名字標籤模板圖並設定 `healer_tag_path`，並依實際狀況調整 `healer_y_tolerance`（同層判定容忍度）與 `healer_x_dead_zone`（停止跟隨死區）。
 
 3. **斷線重連設定**：

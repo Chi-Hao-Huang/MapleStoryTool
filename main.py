@@ -24,6 +24,26 @@ import subprocess
 # ---------------------------------------------------------
 
 @dataclass
+class LayerConfig:
+    """平台圖層設定:小地圖 Y 座標落在 [y_min, y_max] 視為在這一層,
+    並套用這一層專屬的左右巡邏邊界。index 只是圖層代號,供 RopeConfig 參照連接關係用。"""
+    index: int
+    y_min: int
+    y_max: int
+    left_bound: int
+    right_bound: int
+
+
+@dataclass
+class RopeConfig:
+    """繩索設定:小地圖上的 X 座標,以及這條繩索連接的下層/上層 index
+    (對應 LayerConfig.index)。座標皆以小地圖(不受角色移動/畫面捲動影響)為準。"""
+    x: int
+    lower_layer: int
+    upper_layer: int
+
+
+@dataclass
 class BotConfig:
     main_loop_sleep: float = 0.05
     monsters_threshold: float = 0.82
@@ -74,6 +94,23 @@ class BotConfig:
 
     # 斷線重連是否啟用
     enable_reconnect: bool = True
+
+    # ---- 跨平台爬繩模組 ----
+    # 定義地圖有哪些平台圖層(小地圖 Y 座標範圍 + 該層左右巡邏邊界)。
+    # 保持空清單則完全不啟用跨層爬繩,行為退回原本單層 minimap_left_bound/right_bound 巡邏。
+    layers: List[LayerConfig] = field(default_factory=list)
+    # 定義小地圖上每一條繩索的 X 座標,以及它連接的上下兩層 index(需對應 layers 裡的 index)。
+    ropes: List[RopeConfig] = field(default_factory=list)
+
+    climb_up_key: str = 'up'
+    drop_down_key: str = 'down'
+    drop_jump_key: str = 'alt'
+
+    rope_x_tolerance: int = 4          # 判定「已對齊繩索正下方/正上方」的小地圖 X 容忍度(像素)
+    layer_reach_tolerance: int = 6     # 判定「已爬到目標層」的小地圖 Y 容忍度(像素)
+    climb_timeout_seconds: float = 6.0        # 爬繩逾時保護,避免卡在半路不動
+    min_seconds_between_climbs: float = 4.0   # 同一條繩索避免立刻來回爬,兩次使用間至少間隔幾秒
+    post_transition_cooldown: float = 1.5     # 完成爬繩/掉落後,暫停幾秒讓動作播放完畢再重新判斷巡邏
 
 
 # ---------------------------------------------------------
@@ -517,26 +554,34 @@ def get_minimap_player_abs_pos(game_img, win):
     return (mm_x1 + minimap_pos[0], mm_y1 + minimap_pos[1])
 
 
-def decide_move_direction(abs_mm_x, current_direction, cfg: BotConfig):
-    """依小地圖 X 座標決定是否需要在邊界折返"""
-    if abs_mm_x <= cfg.minimap_left_bound:
+def decide_move_direction(abs_mm_x, current_direction, cfg: BotConfig, left_bound=None, right_bound=None):
+    """依小地圖 X 座標決定是否需要在邊界折返。
+    left_bound/right_bound 未提供時退回 cfg.minimap_left_bound/right_bound(向後相容單層巡邏)。"""
+    left_bound = cfg.minimap_left_bound if left_bound is None else left_bound
+    right_bound = cfg.minimap_right_bound if right_bound is None else right_bound
+
+    if abs_mm_x <= left_bound:
         if current_direction != "right":
             print(f"[跑圖模組] 達到邊界 (X={abs_mm_x})，移動方向為 right")
         return "right"
-    elif abs_mm_x >= cfg.minimap_right_bound:
+    elif abs_mm_x >= right_bound:
         if current_direction != "left":
             print(f"[跑圖模組] 達到邊界 (X={abs_mm_x})，移動方向為 left")
         return "left"
     return current_direction
 
 
-def decide_move_target(player_pos, healer_pos, abs_mm_x, current_direction, cfg: BotConfig):
+def decide_move_target(player_pos, healer_pos, abs_mm_x, current_direction, cfg: BotConfig,
+                        left_bound=None, right_bound=None):
     """
     決定本次要往哪個方向移動 (或停止)。
 
     - 若偵測到補師,且補師 Y 座標與玩家 Y 座標相近 (視為同一平台/樓層):
       改成朝補師的 X 座標靠攏。已經在容忍範圍內就回傳 None (代表停止移動)。
     - 否則維持原本邊界折返邏輯 (decide_move_direction)。
+
+    left_bound/right_bound: 可傳入目前所在圖層(LayerConfig)的邊界,取代 cfg 裡的預設值,
+    供跨平台爬繩模組依「目前圖層」而非全域單一邊界做巡邏判斷。
 
     回傳值: "left" / "right" / None (None 代表這次不移動)
     """
@@ -555,7 +600,117 @@ def decide_move_target(player_pos, healer_pos, abs_mm_x, current_direction, cfg:
             return direction
 
     # 沒偵測到補師 或 不同層 -> 維持原本邊界折返邏輯
-    return decide_move_direction(abs_mm_x, current_direction, cfg)
+    return decide_move_direction(abs_mm_x, current_direction, cfg, left_bound, right_bound)
+
+
+def find_layer_by_y(abs_mm_y, layers: List[LayerConfig]) -> Optional[LayerConfig]:
+    """依小地圖 Y 座標找出目前所在的平台圖層,找不到回傳 None"""
+    for layer in layers:
+        if layer.y_min <= abs_mm_y <= layer.y_max:
+            return layer
+    return None
+
+
+def find_rope_near_x(abs_mm_x, layer_index, ropes: List[RopeConfig], tolerance) -> Optional[RopeConfig]:
+    """在目前圖層中,找出小地圖 X 座標落在容忍範圍內、且與這一層相連(上層或下層皆可)的繩索"""
+    for rope in ropes:
+        if layer_index not in (rope.lower_layer, rope.upper_layer):
+            continue
+        if abs(abs_mm_x - rope.x) <= tolerance:
+            return rope
+    return None
+
+
+class RopeTraverser:
+    """
+    跨平台爬繩/掉落狀態機。
+
+    一旦呼叫 start() 啟動,接下來每個 tick 都改由 step() 接管移動判斷:
+    先左右移動對齊繩索的小地圖 X 座標,對齊後再按住爬繩鍵往上爬(或按下+跳躍鍵直接掉落到下層平台),
+    直到小地圖 Y 座標進入目標層範圍(或逾時)才結束,把控制權交還給一般巡邏邏輯。
+    """
+
+    def __init__(self, cfg: BotConfig):
+        self.cfg = cfg
+        self.active = False
+        self.rope: Optional[RopeConfig] = None
+        self.direction: Optional[str] = None   # "up" 或 "down"
+        self.phase: Optional[str] = None        # "align" 或 "climb"
+        self.start_time: float = 0.0
+        self.last_transition_time: float = 0.0
+        self.last_rope_x: Optional[int] = None
+
+    def can_start(self, rope: RopeConfig) -> bool:
+        """避免同一條繩索剛完成動作就立刻來回爬"""
+        if self.last_rope_x == rope.x and \
+                (time.time() - self.last_transition_time) < self.cfg.min_seconds_between_climbs:
+            return False
+        return True
+
+    def start(self, rope: RopeConfig, direction: str):
+        action_label = "爬繩上樓" if direction == "up" else "掉落下樓"
+        print(f"[跨平台爬繩模組] 開始{action_label} (繩索 X={rope.x}, "
+              f"圖層 {rope.lower_layer} <-> {rope.upper_layer})")
+        self.active = True
+        self.rope = rope
+        self.direction = direction
+        self.phase = "align"
+        self.start_time = time.time()
+
+    def _finish(self, reason=""):
+        keyup_all(('left', 'right', self.cfg.climb_up_key, self.cfg.drop_down_key))
+        if self.rope is not None:
+            self.last_rope_x = self.rope.x
+        self.last_transition_time = time.time()
+        self.active = False
+        self.rope = None
+        self.direction = None
+        self.phase = None
+        if reason:
+            print(f"[跨平台爬繩模組] 動作結束 ({reason})")
+
+    def step(self, abs_mm_x, abs_mm_y, layers: List[LayerConfig]) -> bool:
+        """執行一個 tick 的爬繩/掉落動作。回傳 True 代表本 tick 的移動已由本模組接管"""
+        if not self.active or self.rope is None:
+            return False
+
+        if time.time() - self.start_time > self.cfg.climb_timeout_seconds:
+            self._finish("逾時保護,放棄本次動作")
+            return True
+
+        if self.phase == "align":
+            dx = self.rope.x - abs_mm_x
+            if abs(dx) <= self.cfg.rope_x_tolerance:
+                keyup_all(('left', 'right'))
+                self.phase = "climb"
+                if self.direction == "up":
+                    pydirectinput.keyDown(self.cfg.climb_up_key, _pause=False)
+                else:
+                    # 掉落下樓:按住下鍵再點一下跳躍鍵,下一個 tick 再放開下鍵
+                    pydirectinput.keyDown(self.cfg.drop_down_key, _pause=False)
+                    time.sleep(0.05)
+                    pydirectinput.press(self.cfg.drop_jump_key, _pause=False)
+            else:
+                move_dir = "right" if dx > 0 else "left"
+                keyup_all(('left', 'right'))
+                pydirectinput.keyDown(move_dir, _pause=False)
+            return True
+
+        if self.phase == "climb":
+            if self.direction == "down":
+                # 掉落是瞬間動作,放開下鍵後就視為完成,由下個 tick 重新判斷所在圖層
+                self._finish("掉落動作已觸發")
+                return True
+
+            target_layer_index = self.rope.upper_layer
+            target_layer = next((layer for layer in layers if layer.index == target_layer_index), None)
+            if target_layer is not None and \
+                    target_layer.y_min - self.cfg.layer_reach_tolerance <= abs_mm_y \
+                    <= target_layer.y_max + self.cfg.layer_reach_tolerance:
+                self._finish("已到達目標層")
+            return True
+
+        return False
 
 
 # ---------------------------------------------------------
@@ -565,7 +720,9 @@ def decide_move_target(player_pos, healer_pos, abs_mm_x, current_direction, cfg:
 def build_debug_image(win, screen, template_path='image/mo_00065.png', threshold=0.5,
                        attack_radius=300, player_target_pos=(0, 0),
                        healer_tag_path=None, healer_threshold=0.55,
-                       healer_y_tolerance=30, healer_x_dead_zone=15):
+                       healer_y_tolerance=30, healer_x_dead_zone=15,
+                       layers: Optional[List['LayerConfig']] = None,
+                       ropes: Optional[List['RopeConfig']] = None):
     """
     根據傳入的 screen(已經截好的 BGRA 畫面) 繪製除錯圖層,回傳 debug_img。
     debug 模式著重可讀性而非效能,因此這裡仍用全螢幕搜尋,不套用 ROI 加速。
@@ -604,6 +761,22 @@ def build_debug_image(win, screen, template_path='image/mo_00065.png', threshold
     else:
         cv2.putText(debug_img, "Minimap Player: NOT FOUND",
                     (mm_x2 + 10, mm_y1 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+
+    # 跨平台爬繩模組校正輔助:在小地圖 ROI 上畫出每層的 Y 範圍與每條繩索的 X 座標
+    if layers:
+        for layer in layers:
+            ly1 = mm_y1 + layer.y_min
+            ly2 = mm_y1 + layer.y_max
+            cv2.rectangle(debug_img, (mm_x1, ly1), (mm_x2, ly2), (0, 255, 0), 1)
+            cv2.putText(debug_img, f"L{layer.index}", (mm_x2 + 5, (ly1 + ly2) // 2),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+
+    if ropes:
+        for rope in ropes:
+            rx = mm_x1 + rope.x
+            cv2.line(debug_img, (rx, mm_y1), (rx, mm_y2), (0, 0, 255), 1)
+            cv2.putText(debug_img, f"{rope.lower_layer}<->{rope.upper_layer}",
+                        (max(mm_x1, rx - 12), mm_y2 + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
 
     player_x, player_y = player_target_pos
     h, w = debug_img.shape[:2]
@@ -1025,6 +1198,7 @@ if __name__ == "__main__":
     # 迴圈間狀態
     move_direction = "left"
     timed_key_task = TimedKeyTrigger(key='n', interval_seconds=120)
+    rope_traverser = RopeTraverser(cfg)
     tick_count = 0
 
     # 上次偵測到的角色/補師位置,用來做局部搜尋加速
@@ -1130,10 +1304,16 @@ if __name__ == "__main__":
             print(f"玩家位置: {player_target_pos}, 補師位置: {healer_target_pos}, "
                   f"小地圖座標: ({abs_mm_x}, {abs_mm_y}), 怪物數: {len(monster_positions)}")
 
-            # 木面@@@
-            if abs_mm_y >= 150:
-                cfg.minimap_right_bound = 100
-                cfg.minimap_left_bound = 40
+            current_layer = find_layer_by_y(abs_mm_y, cfg.layers) if cfg.layers else None
+
+            if cfg.layers:
+                if current_layer is None:
+                    print(f"警告: 小地圖 Y={abs_mm_y} 沒有對應的 layers 設定,暫用預設邊界巡邏")
+            else:
+                # 木面@@@ (未設定 cfg.layers 時,維持原本的單層邊界切換寫法)
+                if abs_mm_y >= 150:
+                    cfg.minimap_right_bound = 100
+                    cfg.minimap_left_bound = 40
 
             if cfg.debug:
                 debug_img = build_debug_image(
@@ -1147,6 +1327,8 @@ if __name__ == "__main__":
                     healer_threshold=cfg.healer_tag_threshold,
                     healer_y_tolerance=cfg.healer_y_tolerance,
                     healer_x_dead_zone=cfg.healer_x_dead_zone,
+                    layers=cfg.layers,
+                    ropes=cfg.ropes,
                 )
                 if cfg.debug_show_window:
                     show_debug_window(debug_img)
@@ -1155,23 +1337,44 @@ if __name__ == "__main__":
                 #time.sleep(cfg.main_loop_sleep)
                 continue
 
-            # 移動目標判斷:同層有補師 -> 靠攏補師，否則維持邊界折返
-            new_direction = decide_move_target(
-                player_target_pos, healer_target_pos, abs_mm_x, move_direction, cfg
-            )
+            # 跨平台爬繩模組:若正在爬繩/掉落中,由它接管本次移動判斷
+            handled_by_rope = rope_traverser.step(abs_mm_x, abs_mm_y, cfg.layers)
 
-            keyup_all()
-            if new_direction is None:
-                # 已到達補師附近,停止左右移動
-                pass
-            else:
-                move_direction = new_direction
-                pydirectinput.keyDown(move_direction, _pause=False)
+            if not handled_by_rope:
+                cooldown_ok = (time.time() - rope_traverser.last_transition_time) >= cfg.post_transition_cooldown
 
-            # 找出範圍內所有怪物,依數量決定範圍攻擊或單體攻擊
-            monsters_in_range = find_monsters_in_range(
-                monster_positions, player_target_pos, cfg.attack_distance_threshold
-            )
-            handle_attack(monsters_in_range, player_target_pos, move_direction, cfg)
+                if current_layer is not None and cooldown_ok:
+                    rope = find_rope_near_x(abs_mm_x, current_layer.index, cfg.ropes, cfg.rope_x_tolerance)
+                    if rope is not None and rope_traverser.can_start(rope):
+                        direction = "up" if current_layer.index == rope.lower_layer else "down"
+                        keyup_all()
+                        rope_traverser.start(rope, direction)
+                        handled_by_rope = True
+
+                if not handled_by_rope:
+                    left_bound = current_layer.left_bound if current_layer else None
+                    right_bound = current_layer.right_bound if current_layer else None
+
+                    # 移動目標判斷:同層有補師 -> 靠攏補師，否則維持邊界折返
+                    new_direction = decide_move_target(
+                        player_target_pos, healer_target_pos, abs_mm_x, move_direction, cfg,
+                        left_bound=left_bound, right_bound=right_bound
+                    )
+
+                    keyup_all()
+                    if new_direction is None:
+                        # 已到達補師附近,停止左右移動
+                        pass
+                    else:
+                        move_direction = new_direction
+                        pydirectinput.keyDown(move_direction, _pause=False)
+
+            # 爬繩/掉落過程中無法攻擊,只有在一般巡邏移動時才判斷攻擊
+            if not rope_traverser.active:
+                # 找出範圍內所有怪物,依數量決定範圍攻擊或單體攻擊
+                monsters_in_range = find_monsters_in_range(
+                    monster_positions, player_target_pos, cfg.attack_distance_threshold
+                )
+                handle_attack(monsters_in_range, player_target_pos, move_direction, cfg)
 
             #time.sleep(cfg.main_loop_sleep)
