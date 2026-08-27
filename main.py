@@ -16,6 +16,8 @@ from PIL import Image
 import random
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
+import pyautogui
+import subprocess
 
 # ---------------------------------------------------------
 # 設定集中管理
@@ -26,17 +28,18 @@ class BotConfig:
     main_loop_sleep: float = 0.05
     monsters_threshold: float = 0.82
     template_paths: List[str] = field(default_factory=lambda: [
-    #    'image/骷髏狗2.png',
+      # 'image/骷髏狗2.png',
        'image/木面人.png',
+      # 'image/骷髏士兵1.png',
     ])
     player_threshold: float = 0.6
     attack_distance_threshold: int = 220
     move_center: int = 764
 
     # 骷髏狗
-    minimap_left_bound: int = 60
-    minimap_right_bound: int = 100
-    
+    #minimap_left_bound: int = 60
+    #minimap_right_bound: int = 100
+
     # 木面
     minimap_left_bound: int = 55
     minimap_right_bound: int = 70
@@ -53,7 +56,7 @@ class BotConfig:
     # 補師跟隨模組
     healer_tag_path: str = 'image/healer_tag.png'
     healer_tag_threshold: float = 0.6
-    healer_y_tolerance: int = 100   # Y座標差在此範圍內視為同一層
+    #healer_y_tolerance: int = 100   # Y座標差在此範圍內視為同一層
     healer_y_tolerance: int = -100   # 木面@@@
     healer_x_dead_zone: int = 100   # X座標差在此範圍內視為已到達補師旁邊,不再移動
 
@@ -69,24 +72,40 @@ class BotConfig:
     player_search_margin: int = 150
     healer_search_margin: int = 200
 
+    # 斷線重連是否啟用
+    enable_reconnect: bool = True
+
 
 # ---------------------------------------------------------
 # tool
 # ---------------------------------------------------------
 
 def activate_window(win):
+    """
+    將視窗帶到前景並取得焦點。
+    若視窗已最小化,先還原,否則 ShowWindow(hwnd, 5) 對最小化視窗可能無效。
+    """
     hwnd = win._hWnd
+    try:
+        if win.isMinimized:
+            win.restore()
+    except Exception:
+        ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
     ctypes.windll.user32.ShowWindow(hwnd, 5)
     ctypes.windll.user32.SetForegroundWindow(hwnd)
+ 
 
 
-def get_game_window(title='新楓之谷', activate=False):
+def get_window(title_exact=None, title_contains=None, activate=False):
     """
-    取得遊戲視窗物件。
-    activate=True 時才會呼叫 SetForegroundWindow 搶焦點 -- 這個系統呼叫較慢,
-    平常每個 tick 只需要更新視窗座標,不需要每次都搶焦點。
+    通用視窗尋找函式。
+    先用完整標題精準匹配,找不到再用「標題包含關鍵字」模糊匹配(例如 Chrome 分頁標題會變動)。
     """
-    wins = gw.getWindowsWithTitle(title)
+    wins = []
+    if title_exact:
+        wins = gw.getWindowsWithTitle(title_exact)
+    if not wins and title_contains:
+        wins = [w for w in gw.getAllWindows() if title_contains in w.title]
     if not wins:
         return None
     win = wins[0]
@@ -95,11 +114,24 @@ def get_game_window(title='新楓之谷', activate=False):
     return win
 
 
+def get_game_window(title='新楓之谷', activate=False):
+    """
+    取得遊戲視窗物件。
+    activate=True 時才會呼叫 SetForegroundWindow 搶焦點 -- 這個系統呼叫較慢,
+    平常每個 tick 只需要更新視窗座標,不需要每次都搶焦點。
+    """
+    return get_window(title_exact=title, activate=activate)
+
+
 def keyup_all(keys=('left', 'right')):
     # 放開按鍵是否成功不影響時序精準度,略過內建 pause 節省時間
     for key in keys:
         pydirectinput.keyUp(key, _pause=False)
 
+
+def print_debug_img(img):
+    cv2.imwrite('debug_game_img.png', img)
+    
 
 # ---------------------------------------------------------
 # HP / SP 判斷模組
@@ -182,7 +214,7 @@ _MONSTER_TEMPLATE_CACHE = {}  # path -> (gray_left, gray_right, tw, th) 或 None
 
 
 def _load_tag_template(path):
-    """讀取並快取單一標籤(角色/補師)模板的灰階版本"""
+    """讀取並快取單一灰階範本圖片"""
     if path not in _TAG_TEMPLATE_CACHE:
         template = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
         if template is None:
@@ -226,7 +258,7 @@ def _build_search_roi(prev_pos, screen_shape, margin):
 def find_player_by_tag(game_screen_gray, tag_template_path='image/player_tag.png',
                         threshold=0.55, search_region=None):
     """
-    透過角色名字標籤或勛章來定位角色位置 (灰階比對)。
+    透過角色名字標籤或勛章來定位角色位置。
     通用函式:傳入不同的 tag_template_path 就能定位不同角色(自己、補師...等)。
 
     search_region: 可選的 (x1, y1, x2, y2),只在這個範圍內搜尋以加速比對。
@@ -263,7 +295,6 @@ def find_player_by_tag(game_screen_gray, tag_template_path='image/player_tag.png
 def locate_tag_with_fallback(game_screen_gray, tag_template_path, threshold, prev_pos, margin):
     """
     先在「上次位置附近」小範圍搜尋 (快);找不到才退回全螢幕搜尋 (慢,用來重新定位)。
-    大部分 tick 角色/補師位置變化不大,這樣可以省下大部分的運算量。
     """
     region = _build_search_roi(prev_pos, game_screen_gray.shape, margin)
     pos = find_player_by_tag(game_screen_gray, tag_template_path, threshold, search_region=region)
@@ -312,11 +343,7 @@ def non_max_suppression_fast_indices(boxes, overlap_thresh=0.3):
 
 
 def find_monsters(game_screen_gray, template_paths, threshold=0.5):
-    """
-    搜尋多種怪物位置，回傳怪物中心點座標列表 [(x1, y1), ...]
-    灰階比對版本,模板已預先快取,不再每個 tick 重新讀檔。
-    :param template_paths: 圖片路徑列表，例如 ['image/mo1.png', 'image/mo2.png'] 或單一字串
-    """
+    """搜尋多種怪物位置，回傳怪物中心點座標列表 [(x1, y1), ...]"""
     if isinstance(template_paths, str):
         template_paths = [template_paths]
 
@@ -645,12 +672,355 @@ def save_debug_image(debug_img, path="debug_game_screen.png"):
     print(f"{path} saved.")
 
 
+# ---------------------------------------------------------
+# 斷線重連模組
+# ---------------------------------------------------------
+
+@dataclass
+class ReconnectConfig:
+    # 特徵範本
+    disconnect_template: str = 'image/disconnect_notice.png'
+    disconnect_threshold: float = 0.7
+    web_header_template: str = 'image/chrome_header_feature.png'
+    web_header_threshold: float = 0.8
+    server_select_template: str = 'image/server_select_feature.png'
+    server_select_threshold: float = 0.8
+    disconnect_character_template: str = 'image/disconnect_character.png'
+    disconnect_character_threshold: float = 0.7
+
+    # 視窗 / 程序名稱
+    game_window_title: str = '新楓之谷'
+    game_process_name: str = 'MapleStory_Classic.exe'
+    chrome_window_title: str = 'Google Chrome'
+    reconnect_url: str = 'https://maplestoryclassic.beanfun.com/Main'  # 找不到 Chrome 視窗時的備援啟動網址
+
+    # 重試策略
+    max_reconnect_attempts: int = 3
+    retry_backoff_seconds: float = 15.0   # 一輪嘗試失敗後,休息多久再試下一輪
+    max_server_select_retries: int = 3    # 進入角色選擇畫面前偵測到斷線,最多重選伺服器幾次
+
+    # 除錯: 每次點擊前是否存一張標記點擊座標的截圖 (方便校正比例)
+    debug_click_screenshots: bool = False
+
+    # ---- Chrome 視窗內的點擊比例 (相對視窗寬高,不是相對整個桌面!) ----
+    # 這些比例是依照使用者提供的截圖估算,實機第一次使用建議搭配
+    # debug_click_screenshots=True 校正一次。
+    launch_game_btn_ratio: Tuple[float, float] = (0.93, 0.68)
+    gamapass_btn_ratio: Tuple[float, float] = (0.50, 0.54)
+    account_entry_ratio: Tuple[float, float] = (0.50, 0.39)
+    bagel_char_ratio: Tuple[float, float] = (0.50, 0.49)
+    continue_btn_ratio: Tuple[float, float] = (0.50, 0.72)
+
+    # ---- 遊戲視窗內的點擊比例 ----
+    server_name_ratio: Tuple[float, float] = (0.335, 0.28)
+    channel_scrollbar_ratio: Tuple[float, float] = (0.66, 0.67)
+    channel_area_ratio_ch57: Tuple[float, float] = (0.4, 0.6)
+    channel_area_ratio_ch3: Tuple[float, float] = (0.54, 0.51)
+    channel_enter_ratio: Tuple[float, float] = (0.60, 0.47)
+
+class ReconnectManager:
+    def __init__(self, rc: ReconnectConfig):
+        self.rc = rc
+
+    # ---------------- 基礎工具 ----------------
+
+    def debug_click(self, x, y, action_name="click"):
+        """在點擊前截圖並在點擊目標座標上標記紅圈與十字,方便校正比例是否正確。"""
+        with mss.mss() as sct:
+            monitor = sct.monitors[0]
+            img = np.array(sct.grab(monitor))
+
+            cv2.circle(img, (int(x), int(y)), 10, (0, 0, 255), 2)
+            cv2.line(img, (int(x) - 15, int(y)), (int(x) + 15, int(y)), (0, 0, 255), 2)
+            cv2.line(img, (int(x), int(y) - 15), (int(x), int(y) + 15), (0, 0, 255), 2)
+
+            filename = f"debug_{action_name}_{int(x)}_{int(y)}.png"
+            cv2.imwrite(filename, img)
+            print(f"[Debug] 已將點擊座標 ({x}, {y}) 標記並保存至 {filename}")
+
+    def _get_chrome_window(self, activate=False):
+        return get_window(title_exact=self.rc.chrome_window_title,
+                           title_contains='Chrome', activate=activate)
+
+    def _click_ratio(self, win, ratio, label):
+        """在指定視窗內,依照 (rx, ry) 比例點擊,不依賴整個桌面/多螢幕尺寸"""
+        if win is None:
+            print(f"[斷線重連模組] 警告: 視窗不存在,無法點擊「{label}」,跳過")
+            return False
+        rx, ry = ratio
+        x = win.left + int(win.width * rx)
+        y = win.top + int(win.height * ry)
+        if self.rc.debug_click_screenshots:
+            self.debug_click(x, y, action_name=label)
+        pyautogui.click(x=x, y=y)
+        return True
+
+    # ---------------- 偵測 ----------------
+
+    def is_disconnected(self, game_img):
+        """判斷目前遊戲畫面是否顯示斷線對話框"""
+        template = _load_tag_template(self.rc.disconnect_template)
+        if template is None:
+            return False
+        try:
+            game_gray = cv2.cvtColor(game_img, cv2.COLOR_BGRA2GRAY)
+            res = cv2.matchTemplate(game_gray, template, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, _ = cv2.minMaxLoc(res)
+            return max_val >= self.rc.disconnect_threshold
+        except Exception as e:
+            print(f"[斷線重連模組] is_disconnected 發生例外: {e}")
+            return False
+
+    def force_close_game(self, max_retries=3, retry_delay=3.0):
+        """強制關閉舊的遊戲視窗與相關程序，失敗時會重複嘗試。"""
+        print("[斷線重連模組] 正在檢查並強制關閉舊的遊戲視窗與程序...")
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/IM", self.rc.game_process_name, "/T"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+            except Exception as e:
+                print(f"[斷線重連模組] 第 {attempt} 次關閉指令執行異常: {e}")
+
+            time.sleep(1.0)
+
+            remaining_wins = gw.getWindowsWithTitle(self.rc.game_window_title)
+            check_process = subprocess.run(
+                ["tasklist", "/FI", f"IMAGENAME eq {self.rc.game_process_name}"],
+                capture_output=True,
+                text=True
+            )
+            process_exists = self.rc.game_process_name in check_process.stdout
+
+            if not remaining_wins and not process_exists:
+                print(f"[斷線重連模組] 第 {attempt} 次嘗試成功！遊戲視窗與進程已完全清理。")
+                time.sleep(1.0)
+                return True
+
+            print(f"[斷線重連模組] 第 {attempt} 次強制關閉未完全成功，{retry_delay} 秒後重試...")
+            time.sleep(retry_delay)
+
+        print("[斷線重連模組] 警告：已達到最大重試次數，將嘗試繼續執行重連流程。")
+        return False
+
+    def wait_for_web_feature(self, timeout=10.0):
+        """等待並判斷螢幕畫面上是否出現 Chrome 官網導覽列特徵。"""
+        print("[斷線重連模組] 等待官網頁面載入並搜尋特徵標籤...")
+        template = _load_tag_template(self.rc.web_header_template)
+        if template is None:
+            print(f"[警告] 找不到特徵檔 '{self.rc.web_header_template}'，跳過網頁特徵檢測！")
+            return True
+
+        start_time = time.time()
+        with mss.mss() as sct:
+            monitor = sct.monitors[0]
+            while time.time() - start_time < timeout:
+                screen_shot = np.array(sct.grab(monitor))
+                screen_gray = cv2.cvtColor(screen_shot, cv2.COLOR_BGRA2GRAY)
+
+                res = cv2.matchTemplate(screen_gray, template, cv2.TM_CCOEFF_NORMED)
+                _, max_val, _, _ = cv2.minMaxLoc(res)
+
+                if max_val >= self.rc.web_header_threshold:
+                    print(f"[斷線重連模組] 成功偵測到官網標籤特徵 (匹配度: {max_val:.2f})！")
+                    return True
+
+                time.sleep(0.5)
+
+        print("[斷線重連模組] 警告：等待官網特徵逾時！將嘗試直接繼續執行。")
+        return False
+
+    def wait_for_game_server_page(self, timeout=90.0):
+        """等待並驗證遊戲是否成功彈出並載入到「伺服器選擇」畫面"""
+        print("[斷線重連模組] 等待遊戲視窗載入伺服器選擇畫面...")
+
+        template = _load_tag_template(self.rc.server_select_template)
+        if template is None:
+            print(f"[警告] 找不到伺服器畫面特徵檔 '{self.rc.server_select_template}'，改用視窗標題判斷。")
+            return True
+
+        start_time = time.time()
+        with mss.mss() as sct:
+            while time.time() - start_time < timeout:
+                # Chrome 有時會在等待過程中自己跳回最上層(例如頁面導向、彈出提示),
+                # 縮小的話它還在,可能又被拉回前景形成縮小/彈出的循環,乾脆直接關閉它
+                chrome_win = self._get_chrome_window()
+                if chrome_win is not None:
+                    try:
+                        chrome_win.close()
+                    except Exception:
+                        pass
+
+                game_win = get_game_window(title=self.rc.game_window_title, activate=True)
+                if game_win:
+                    monitor = {
+                        "left": game_win.left,
+                        "top": game_win.top,
+                        "width": game_win.width,
+                        "height": game_win.height
+                    }
+                    game_img = np.array(sct.grab(monitor))
+                    game_gray = cv2.cvtColor(game_img, cv2.COLOR_BGRA2GRAY)
+
+                    res = cv2.matchTemplate(game_gray, template, cv2.TM_CCOEFF_NORMED)
+                    _, max_val, _, _ = cv2.minMaxLoc(res)
+
+                    if max_val >= self.rc.server_select_threshold:
+                        print(f"[斷線重連模組] 成功檢測到伺服器選擇畫面 (匹配度: {max_val:.2f})！")
+                        return True
+
+                time.sleep(0.5)
+
+        print("[斷線重連模組] 警告：等待伺服器選擇畫面逾時，嘗試直接繼續執行。")
+        return False
+
+    # ---------------- 主流程 ----------------
+
+    def _run_reconnect_once(self):
+        """
+        執行一輪完整的重連流程。任何一步失敗會提早回傳 False,
+        由外層 handle_reconnect 決定要不要重試。
+        """
+        self.force_close_game()
+
+        chrome_win = self._get_chrome_window(activate=True)
+        if chrome_win is None:
+            print("[斷線重連模組] 找不到 Chrome 視窗,嘗試啟動瀏覽器...")
+            try:
+                subprocess.Popen(["cmd", "/c", "start", "chrome", self.rc.reconnect_url])
+            except Exception as e:
+                print(f"[斷線重連模組] 啟動 Chrome 失敗: {e}")
+            time.sleep(3.0)
+            chrome_win = self._get_chrome_window(activate=True)
+
+        if chrome_win is None:
+            print("[斷線重連模組] 錯誤: 仍找不到 Chrome 視窗,本輪嘗試失敗")
+            return False
+
+        time.sleep(1.0)
+        self.wait_for_web_feature(timeout=10.0)
+
+        # Step 2: 點擊右側的「下載遊戲 / 啟動遊戲」按鈕
+        self._click_ratio(chrome_win, self.rc.launch_game_btn_ratio, "launch_game")
+        time.sleep(2.5)
+
+        # Step 3: 點擊 "Sign in with gamapass"
+        chrome_win = self._get_chrome_window() or chrome_win
+        self._click_ratio(chrome_win, self.rc.gamapass_btn_ratio, "gamapass_login")
+        time.sleep(3.5)
+        
+        # Step 4: 點選帳號
+        chrome_win = self._get_chrome_window() or chrome_win
+        self._click_ratio(chrome_win, self.rc.account_entry_ratio, "account_entry")
+        time.sleep(3.5)
+
+        # Step 5: 點擊帳號並按 "繼續"
+        chrome_win = self._get_chrome_window() or chrome_win
+        self._click_ratio(chrome_win, self.rc.bagel_char_ratio, "select_bagel")
+        time.sleep(1.5)
+        self._click_ratio(chrome_win, self.rc.continue_btn_ratio, "continue_btn")
+        time.sleep(15.0)
+
+        # Chrome 這裡的操作已經全部做完,之後只需要讀遊戲視窗的畫面,
+        chrome_win = self._get_chrome_window() or chrome_win
+        if chrome_win is not None:
+            try:
+                chrome_win.close()
+            except Exception as e:
+                print(f"[斷線重連模組] 關閉 Chrome 視窗失敗: {e}")
+
+        # 輪詢直到伺服器選擇畫面真的出現為止
+        if not self.wait_for_game_server_page(timeout=90.0):
+            print("[斷線重連模組] 逾時仍未看到伺服器選擇畫面,本輪嘗試失敗")
+            return False
+
+        game_win = get_game_window(title=self.rc.game_window_title, activate=True)
+        if game_win is None:
+            print("[斷線重連模組] 錯誤: 找不到遊戲視窗,本輪嘗試失敗")
+            return False
+        
+        time.sleep(5.0)
+
+        # 點擊 "1 雪吉拉" 伺服器
+        self._click_ratio(game_win, self.rc.server_name_ratio, "server_name")
+        time.sleep(2.0)
+
+        # 展開頻道選單,捲動到最下面
+        self._click_ratio(game_win, self.rc.channel_scrollbar_ratio, "scroll_to_bottom")
+        time.sleep(2.0)
+
+        # 點擊頻道區域,再用方向鍵微調到 ch.57
+        self._click_ratio(game_win, self.rc.channel_area_ratio_ch57, "channel_area")
+        time.sleep(0.5)
+        pydirectinput.press('down')
+        time.sleep(0.5)
+        pydirectinput.press('down')
+        time.sleep(0.5)
+        pydirectinput.press('down')
+        time.sleep(2.0)
+        pydirectinput.press('down')
+        time.sleep(2.0)
+        
+        '''
+        # 點擊頻道 ch.3
+        self._click_ratio(game_win, self.rc.channel_area_ratio_ch3, "channel_area")
+        time.sleep(2.0)
+        '''
+
+        # 進入伺服器
+        self._click_ratio(game_win, self.rc.channel_enter_ratio, "channel_area")
+        time.sleep(5.0)
+
+        '''
+        # 進入伺服器
+        pydirectinput.press('enter')
+        time.sleep(2.0)
+        '''
+
+        # 進入遊戲(選角色)
+        pydirectinput.press('enter')
+        time.sleep(5.0)
+
+        return True
+
+    def handle_reconnect(self):
+        """
+        對外的重連入口。內部最多重試 max_reconnect_attempts 次,
+        每次都包在 try/except 裡,避免任何一步的例外把整個 bot 拖垮。
+        回傳 True/False 代表這次重連是否成功。
+        """
+        print("[斷線重連模組] 偵測到斷線！開始執行重新連線流程...")
+
+        for attempt in range(1, self.rc.max_reconnect_attempts + 1):
+            print(f"[斷線重連模組] === 第 {attempt}/{self.rc.max_reconnect_attempts} 次嘗試 ===")
+            try:
+                if self._run_reconnect_once():
+                    print("[斷線重連模組] 重新連線完成，準備回歸主腳本！")
+                    return True
+            except Exception as e:
+                print(f"[斷線重連模組] 第 {attempt} 次嘗試發生未預期例外: {e}")
+
+            if attempt < self.rc.max_reconnect_attempts:
+                print(f"[斷線重連模組] {self.rc.retry_backoff_seconds:.0f} 秒後重試...")
+                time.sleep(self.rc.retry_backoff_seconds)
+
+        print("[斷線重連模組] 已達最大重試次數，重新連線失敗！請人工介入檢查畫面狀態。")
+        return False
+
+
 if __name__ == "__main__":
     """要用系統管理員權限啟動 IDE 才能正確觸發 DirectInput 按鍵"""
     pydirectinput.FAILSAFE = False
     pydirectinput.PAUSE = 0.05
 
     cfg = BotConfig()
+    rc_cfg = ReconnectConfig()
+
+    # 初始化重連模組
+    reconnector = ReconnectManager(rc_cfg)
 
     # 迴圈間狀態
     move_direction = "left"
@@ -660,6 +1030,10 @@ if __name__ == "__main__":
     # 上次偵測到的角色/補師位置,用來做局部搜尋加速
     last_player_pos: Optional[Tuple[int, int]] = None
     last_healer_pos: Optional[Tuple[int, int]] = None
+
+    # 連續重連失敗次數: 超過門檻就不再自動重試,避免無限狂點
+    consecutive_reconnect_failures = 0
+    max_consecutive_reconnect_failures = 3
 
     # 啟動時搶一次焦點
     win = get_game_window(activate=True)
@@ -682,6 +1056,25 @@ if __name__ == "__main__":
             game_region = {"left": win.left, "top": win.top, "width": win.width, "height": win.height}
             game_img = np.array(sct.grab(game_region))
             game_img_gray = cv2.cvtColor(game_img, cv2.COLOR_BGRA2GRAY)
+
+            # 斷線檢測模組
+            if cfg.enable_reconnect and reconnector.is_disconnected(game_img):
+                keyup_all()
+                success = reconnector.handle_reconnect()
+
+                # 重連後畫面完全不同,舊的局部搜尋座標一定不能再用,強制回到全螢幕搜尋
+                last_player_pos = None
+                last_healer_pos = None
+
+                if success:
+                    consecutive_reconnect_failures = 0
+                else:
+                    consecutive_reconnect_failures += 1
+                    if consecutive_reconnect_failures >= max_consecutive_reconnect_failures:
+                        print(f"[主程式] 連續 {consecutive_reconnect_failures} 次重連失敗,"
+                              f"停止自動重連,請人工檢查狀況！")
+                        break
+                continue
 
             print("=" * 50)
 
@@ -737,7 +1130,6 @@ if __name__ == "__main__":
             print(f"玩家位置: {player_target_pos}, 補師位置: {healer_target_pos}, "
                   f"小地圖座標: ({abs_mm_x}, {abs_mm_y}), 怪物數: {len(monster_positions)}")
 
-
             # 木面@@@
             if abs_mm_y >= 150:
                 cfg.minimap_right_bound = 100
@@ -763,7 +1155,7 @@ if __name__ == "__main__":
                 #time.sleep(cfg.main_loop_sleep)
                 continue
 
-            # 移動目標判斷:同層有補師 -> 靠攏補師;否則維持邊界折返
+            # 移動目標判斷:同層有補師 -> 靠攏補師，否則維持邊界折返
             new_direction = decide_move_target(
                 player_target_pos, healer_target_pos, abs_mm_x, move_direction, cfg
             )
