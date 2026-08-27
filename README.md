@@ -48,9 +48,14 @@
 10. **跨平台爬繩模組 (Rope Traverser)**
     - 由於主畫面座標會隨鏡頭捲動而改變，此模組完全以**小地圖座標**（不受鏡頭影響）判斷平台與繩索位置。
     - 用 `LayerConfig` 定義地圖有哪些平台圖層：小地圖 Y 座標範圍 + 該層專屬的左右巡邏邊界；用 `RopeConfig` 定義每條繩索的小地圖 X 座標，以及它連接的上/下層 index。兩者集中設定在 `BotConfig.layers` / `BotConfig.ropes`。
-    - `RopeTraverser` 狀態機負責跨多個 tick 執行「左右對齊繩索 X 座標 → 按住 `climb_up_key` 往上爬 / 按住 `drop_down_key` 再點 `drop_jump_key` 直接掉落到下層 → 偵測小地圖 Y 座標進入目標層範圍即完成」，完成前主迴圈的一般巡邏與攻擊判斷會暫時讓位給它。
+    - `RopeTraverser` 狀態機負責跨多個 tick 執行「左右對齊繩索 X 座標 (`align`) → 抓繩 (`grab`) → 按住 `climb_up_key` 往上爬 / 按住 `drop_down_key` 再點 `drop_jump_key` 直接掉落到下層 (`climb`) → 偵測小地圖 Y 座標進入目標層範圍即完成」，完成前主迴圈的一般巡邏與攻擊判斷會暫時讓位給它。
+    - **抓繩動作優化**：對齊繩索 X 座標後，往上爬預設不會直接站著按 `climb_up_key`，而是先用「方向鍵 + 跳躍鍵 (`drop_jump_key`)」斜向跳起再按住爬繩鍵，比原地站著按爬繩鍵更容易真的咬到繩子；此行為由 `use_jump_to_grab_rope` 控制，容忍度、跳躍持續時間與重試次數分別對應 `grab_x_tolerance` / `grab_hold_seconds` / `grab_retry_interval` / `grab_max_retries`。
+    - **爬繩姿勢範本確認**：新增 `is_player_climbing`，用一張「角色爬繩姿勢」範本圖 (`climbing_pose_template`，預設 `image/climbing_pose.png`) 在玩家座標附近比對，確認角色是否真的抓到繩子在爬，而不是單憑「已經按下爬繩鍵」就假設一定成功；`grab` 階段沒偵測到爬繩姿勢就會依 `grab_retry_interval` 自動重跳。
     - 主迴圈依目前所在圖層計算該層的巡邏邊界，並在角色小地圖 X 座標接近某條繩索時（`rope_x_tolerance`）觸發爬繩/掉落，藉此讓角色依序走遍地圖上所有已設定的平台並持續打怪；`min_seconds_between_climbs` 避免剛完成動作又立刻折返、`post_transition_cooldown` 讓爬繩/掉落動畫播完再恢復巡邏判斷、`climb_timeout_seconds` 則是卡住時的逾時保護。
+    - **同層巡邏次數門檻**：`PatrolLapTracker` 會計算角色在目前圖層已經觸碰邊界折返幾次，未達到 `min_patrol_bounces_before_climb`（預設 3 次）之前，就算靠近繩索也不會觸發爬繩，避免角色一到繩索附近就馬上換平台、同一層打不到幾隻怪就走了；換到新圖層或成功開始爬繩時計數會自動歸零重算。折返次數是以「觸碰邊界」為單位：左邊界走到右邊界算 1 次，一個完整來回(左→右→左)則是 2 次，想要「完整巡邏 3 趟」可以把這個值設成 6。
+    - **其他玩家 / 隊友避讓**：確定要爬繩換層前，會用 `get_minimap_positions_by_color` 比對小地圖上「其他玩家」(`#EE0000` 紅色) 與「隊友」(`#FF7700` 橘色) 的色點，透過 `find_occupied_layers` 換算成所在圖層。若這次要移動過去的目標圖層已經有其他玩家或隊友，就放棄這次換層、留在原地繼續巡邏，下次滿足巡邏次數門檻時會再重新判斷一次；此行為由 `cfg.detect_other_players` 開關控制，顏色的 HSV 範圍對應設定在 `other_player_hsv_lower/upper(2)` 與 `teammate_hsv_lower/upper`。
     - 若 `cfg.layers` 保持空清單，此模組完全不介入，行為會退回原本單層 `minimap_left_bound` / `minimap_right_bound` 巡邏（向後相容既有設定）。
+    - **需要額外準備的範本圖**：從一張角色正在爬繩的截圖中，裁出角色本體(建議不含名字標籤)存成 `image/climbing_pose.png`，比對門檻可依實際比對分數調整 `climbing_pose_threshold`。
     - **校正方式**：開啟 `cfg.debug = True` 並在 `cfg.layers` / `cfg.ropes` 填入初步猜測值，執行後查看 `debug_game_screen.png` 上小地圖 ROI 內以綠色框標出的圖層 Y 範圍、以紅色直線標出的繩索 X 座標，對照小地圖實際的平台與繩索位置反覆微調座標即可。
 
 ---

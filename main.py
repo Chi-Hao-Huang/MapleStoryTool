@@ -74,10 +74,10 @@ class BotConfig:
     aoe_monster_count: int = 2  # 範圍內達到幾隻怪就改用範圍攻擊
 
     # 補師跟隨模組
+    enable_healer_follow: bool = False   # 關閉時完全不搜尋補師、視為找不到補師,退回一般邊界巡邏
     healer_tag_path: str = 'image/healer_tag.png'
     healer_tag_threshold: float = 0.6
-    #healer_y_tolerance: int = 100   # Y座標差在此範圍內視為同一層
-    healer_y_tolerance: int = -100   # 木面@@@
+    healer_y_tolerance: int = 100   # Y座標差在此範圍內視為同一層
     healer_x_dead_zone: int = 100   # X座標差在此範圍內視為已到達補師旁邊,不再移動
 
     debug: bool = False
@@ -107,10 +107,43 @@ class BotConfig:
     drop_jump_key: str = 'alt'
 
     rope_x_tolerance: int = 4          # 判定「已對齊繩索正下方/正上方」的小地圖 X 容忍度(像素)
-    layer_reach_tolerance: int = 6     # 判定「已爬到目標層」的小地圖 Y 容忍度(像素)
+    layer_reach_tolerance: int = 1     # 判定「已爬到目標層」的小地圖 Y 容忍度(像素)
     climb_timeout_seconds: float = 6.0        # 爬繩逾時保護,避免卡在半路不動
     min_seconds_between_climbs: float = 4.0   # 同一條繩索避免立刻來回爬,兩次使用間至少間隔幾秒
     post_transition_cooldown: float = 1.5     # 完成爬繩/掉落後,暫停幾秒讓動作播放完畢再重新判斷巡邏
+
+    # ---- 抓繩動作優化: 用「方向鍵 + 跳躍鍵」斜跳去咬繩,比原地站著按爬繩鍵更容易抓到 ----
+    use_jump_to_grab_rope: bool = True
+    grab_x_tolerance: int = 10          # 改用斜跳抓繩時,允許比 rope_x_tolerance 更寬鬆的對齊容忍度
+    grab_hold_seconds: float = 0.15     # 起跳瞬間持續按住方向鍵的時間,製造橫向位移去咬繩
+    grab_retry_interval: float = 0.6    # 還沒偵測到爬繩姿勢時,每隔多久重新嘗試跳一次抓繩
+    grab_max_retries: int = 3           # 抓繩最多重試幾次,超過就放棄這次爬繩,交還一般巡邏判斷
+
+    # 爬繩姿勢範本比對: 用來確認「真的已經抓到繩子在爬」,比單靠小地圖 Y 座標推測更準
+    climbing_pose_template: str = 'image/climbing_pose.png'
+    climbing_pose_threshold: float = 0.7
+    climbing_pose_search_margin: int = 60
+
+    # 同一層至少要巡邏(觸碰邊界折返)幾次,才允許嘗試爬繩換到下一層,
+    # 避免角色一靠近繩索附近就馬上換平台、同一層打不到幾隻怪。
+    # 一趟「從左邊界走到右邊界」算 1 次折返,一個來回(左->右->左)則是 2 次。
+    min_patrol_bounces_before_climb: int = 2
+
+    # ---- 其他玩家 / 隊友偵測 (換平台前避讓用) ----
+    # 目標圖層小地圖上若偵測到其他玩家或隊友的色點,本次就放棄換到那一層,留在原地繼續巡邏。
+    detect_other_players: bool = True
+    dot_min_area: int = 1
+    dot_max_area: int = 25
+
+    # 其他玩家色點 #EE0000 (紅) 對應的 HSV 範圍;紅色在色環頭尾都算紅,故補一段靠近 179 的範圍
+    other_player_hsv_lower: Tuple[int, int, int] = (0, 100, 100)
+    other_player_hsv_upper: Tuple[int, int, int] = (6, 255, 255)
+    other_player_hsv_lower2: Tuple[int, int, int] = (174, 100, 100)
+    other_player_hsv_upper2: Tuple[int, int, int] = (180, 255, 255)
+
+    # 隊友色點 #FF7700 (橘) 對應的 HSV 範圍
+    teammate_hsv_lower: Tuple[int, int, int] = (10, 150, 150)
+    teammate_hsv_upper: Tuple[int, int, int] = (18, 255, 255)
 
 
 # ---------------------------------------------------------
@@ -340,6 +373,32 @@ def locate_tag_with_fallback(game_screen_gray, tag_template_path, threshold, pre
     return pos
 
 
+def is_player_climbing(game_screen_gray, player_pos, template_path, threshold, search_margin):
+    """
+    在玩家上次位置附近搜尋「爬繩姿勢」範本,用來確認角色是否真的抓到繩子在爬,
+    而不是只憑「已經按下爬繩鍵」就假設一定成功(咬繩子有機率咬不到)。
+    """
+    if player_pos is None:
+        return False
+    template = _load_tag_template(template_path)
+    if template is None:
+        return False
+
+    region = _build_search_roi(player_pos, game_screen_gray.shape, search_margin)
+    if region is None:
+        return False
+    x1, y1, x2, y2 = region
+    roi = game_screen_gray[y1:y2, x1:x2]
+
+    th, tw = template.shape[:2]
+    if roi.shape[0] < th or roi.shape[1] < tw:
+        return False
+
+    res = cv2.matchTemplate(roi, template, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, _ = cv2.minMaxLoc(res)
+    return max_val >= threshold
+
+
 # ---------------------------------------------------------
 # 怪物辨識與攻擊模組
 # ---------------------------------------------------------
@@ -554,6 +613,58 @@ def get_minimap_player_abs_pos(game_img, win):
     return (mm_x1 + minimap_pos[0], mm_y1 + minimap_pos[1])
 
 
+def find_colored_dots_on_minimap(minimap_crop_bgr, lower_hsv, upper_hsv,
+                                  lower_hsv2=None, upper_hsv2=None,
+                                  min_area=1, max_area=25):
+    """
+    在小地圖裁切影像 (BGR) 中,找出符合 HSV 顏色範圍的所有色點中心座標。
+    紅色在 HSV 色環頭尾都算紅,lower_hsv2/upper_hsv2 用來補上靠近 179 那一段範圍。
+    """
+    hsv = cv2.cvtColor(minimap_crop_bgr, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, np.array(lower_hsv), np.array(upper_hsv))
+    if lower_hsv2 is not None and upper_hsv2 is not None:
+        mask = cv2.bitwise_or(mask, cv2.inRange(hsv, np.array(lower_hsv2), np.array(upper_hsv2)))
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    positions = []
+    for c in contours:
+        area = cv2.contourArea(c)
+        if min_area <= area <= max_area:
+            M = cv2.moments(c)
+            if M["m00"] != 0:
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"])
+                positions.append((cx, cy))
+    return positions
+
+
+def get_minimap_positions_by_color(game_img, win, lower_hsv, upper_hsv,
+                                    lower_hsv2=None, upper_hsv2=None,
+                                    min_area=1, max_area=25):
+    """回傳小地圖上符合顏色範圍的所有點的絕對座標 (相對視窗左上) 列表"""
+    minimap_region = get_minimap_region(win)
+    minimap_crop = crop_region(game_img, minimap_region, win)
+    bgr = cv2.cvtColor(minimap_crop, cv2.COLOR_BGRA2BGR)
+
+    rel_positions = find_colored_dots_on_minimap(
+        bgr, lower_hsv, upper_hsv, lower_hsv2, upper_hsv2, min_area, max_area
+    )
+
+    mm_x1 = minimap_region["left"] - win.left
+    mm_y1 = minimap_region["top"] - win.top
+    return [(mm_x1 + x, mm_y1 + y) for (x, y) in rel_positions]
+
+
+def find_occupied_layers(positions, layers: List['LayerConfig']):
+    """依 Y 座標把每個點對應到所在圖層,回傳有出現點的圖層 index 集合"""
+    occupied = set()
+    for _, y in positions:
+        layer = find_layer_by_y(y, layers)
+        if layer is not None:
+            occupied.add(layer.index)
+    return occupied
+
+
 def decide_move_direction(abs_mm_x, current_direction, cfg: BotConfig, left_bound=None, right_bound=None):
     """依小地圖 X 座標決定是否需要在邊界折返。
     left_bound/right_bound 未提供時退回 cfg.minimap_left_bound/right_bound(向後相容單層巡邏)。"""
@@ -625,9 +736,16 @@ class RopeTraverser:
     """
     跨平台爬繩/掉落狀態機。
 
-    一旦呼叫 start() 啟動,接下來每個 tick 都改由 step() 接管移動判斷:
-    先左右移動對齊繩索的小地圖 X 座標,對齊後再按住爬繩鍵往上爬(或按下+跳躍鍵直接掉落到下層平台),
-    直到小地圖 Y 座標進入目標層範圍(或逾時)才結束,把控制權交還給一般巡邏邏輯。
+    一旦呼叫 start() 啟動,接下來每個 tick 都改由 step() 接管移動判斷,依序經過:
+
+    - "align": 左右移動,對齊繩索的小地圖 X 座標。
+    - "grab" (只有往上爬、且 cfg.use_jump_to_grab_rope 開啟時才會經過):
+      對齊後改用「方向鍵 + 跳躍鍵」斜向跳起、同時按住爬繩鍵去咬繩,
+      比站在原地直接按爬繩鍵更容易真的抓到(咬繩子有機率咬不到,斜跳能多涵蓋一點橫向距離)。
+      每隔 grab_retry_interval 秒用 climbing_pose_template 比對確認是否已經抓到繩子,
+      沒抓到就再跳一次,重試達 grab_max_retries 次仍失敗就放棄這次爬繩。
+    - "climb": 已確認在爬繩(或掉落已觸發),持續按著爬繩鍵直到小地圖 Y 座標進入目標層範圍。
+      往下掉落是瞬間動作,對齊後按一次即完成,不會經過 grab 階段。
     """
 
     def __init__(self, cfg: BotConfig):
@@ -635,8 +753,11 @@ class RopeTraverser:
         self.active = False
         self.rope: Optional[RopeConfig] = None
         self.direction: Optional[str] = None   # "up" 或 "down"
-        self.phase: Optional[str] = None        # "align" 或 "climb"
+        self.phase: Optional[str] = None        # "align" / "grab" / "climb"
+        self.jump_dir: Optional[str] = None     # 抓繩起跳時使用的方向鍵
         self.start_time: float = 0.0
+        self.grab_attempts: int = 0
+        self.last_grab_attempt_time: float = 0.0
         self.last_transition_time: float = 0.0
         self.last_rope_x: Optional[int] = None
 
@@ -655,7 +776,9 @@ class RopeTraverser:
         self.rope = rope
         self.direction = direction
         self.phase = "align"
+        self.jump_dir = None
         self.start_time = time.time()
+        self.grab_attempts = 0
 
     def _finish(self, reason=""):
         keyup_all(('left', 'right', self.cfg.climb_up_key, self.cfg.drop_down_key))
@@ -666,10 +789,25 @@ class RopeTraverser:
         self.rope = None
         self.direction = None
         self.phase = None
+        self.jump_dir = None
         if reason:
             print(f"[跨平台爬繩模組] 動作結束 ({reason})")
 
-    def step(self, abs_mm_x, abs_mm_y, layers: List[LayerConfig]) -> bool:
+    def _attempt_grab_jump(self, abs_mm_x):
+        """對齊完成的瞬間,用「方向鍵 + 跳躍鍵」斜向跳起去咬繩,再按住爬繩鍵"""
+        direction = self.jump_dir or ("right" if self.rope.x >= abs_mm_x else "left")
+        self.jump_dir = direction
+        keyup_all(('left', 'right'))
+        pydirectinput.keyDown(direction, _pause=False)
+        pydirectinput.press(self.cfg.drop_jump_key, _pause=False)
+        pydirectinput.keyDown(self.cfg.climb_up_key, _pause=False)
+        time.sleep(self.cfg.grab_hold_seconds)
+        pydirectinput.keyUp(direction, _pause=False)
+        self.grab_attempts += 1
+        self.last_grab_attempt_time = time.time()
+
+    def step(self, abs_mm_x, abs_mm_y, layers: List[LayerConfig],
+             player_screen_gray=None, player_pos=None) -> bool:
         """執行一個 tick 的爬繩/掉落動作。回傳 True 代表本 tick 的移動已由本模組接管"""
         if not self.active or self.rope is None:
             return False
@@ -680,20 +818,50 @@ class RopeTraverser:
 
         if self.phase == "align":
             dx = self.rope.x - abs_mm_x
-            if abs(dx) <= self.cfg.rope_x_tolerance:
+            grab_via_jump = self.direction == "up" and self.cfg.use_jump_to_grab_rope
+            tolerance = self.cfg.grab_x_tolerance if grab_via_jump else self.cfg.rope_x_tolerance
+
+            if abs(dx) <= tolerance:
                 keyup_all(('left', 'right'))
-                self.phase = "climb"
                 if self.direction == "up":
-                    pydirectinput.keyDown(self.cfg.climb_up_key, _pause=False)
+                    if grab_via_jump:
+                        self.phase = "grab"
+                        self._attempt_grab_jump(abs_mm_x)
+                    else:
+                        self.phase = "climb"
+                        pydirectinput.keyDown(self.cfg.climb_up_key, _pause=False)
                 else:
                     # 掉落下樓:按住下鍵再點一下跳躍鍵,下一個 tick 再放開下鍵
+                    self.phase = "climb"
                     pydirectinput.keyDown(self.cfg.drop_down_key, _pause=False)
                     time.sleep(0.05)
                     pydirectinput.press(self.cfg.drop_jump_key, _pause=False)
             else:
                 move_dir = "right" if dx > 0 else "left"
+                self.jump_dir = move_dir
                 keyup_all(('left', 'right'))
                 pydirectinput.keyDown(move_dir, _pause=False)
+            return True
+
+        if self.phase == "grab":
+            climbing = player_screen_gray is not None and is_player_climbing(
+                player_screen_gray, player_pos,
+                self.cfg.climbing_pose_template, self.cfg.climbing_pose_threshold,
+                self.cfg.climbing_pose_search_margin
+            )
+
+            if climbing:
+                print("[跨平台爬繩模組] 已偵測到爬繩姿勢,確認抓到繩子")
+                self.phase = "climb"
+                return True
+
+            if self.grab_attempts >= self.cfg.grab_max_retries:
+                self._finish("多次嘗試仍未抓到繩子,放棄本次爬繩")
+                return True
+
+            if time.time() - self.last_grab_attempt_time >= self.cfg.grab_retry_interval:
+                print(f"[跨平台爬繩模組] 尚未抓到繩子,重試第 {self.grab_attempts + 1} 次")
+                self._attempt_grab_jump(abs_mm_x)
             return True
 
         if self.phase == "climb":
@@ -711,6 +879,41 @@ class RopeTraverser:
             return True
 
         return False
+
+
+class PatrolLapTracker:
+    """
+    追蹤角色在目前圖層已經來回巡邏(觸碰邊界折返)幾次。
+    換到新圖層時自動歸零重算,達到 cfg.min_patrol_bounces_before_climb 之前不允許嘗試爬繩換層,
+    避免角色一靠近繩索附近就馬上換平台、同一層還沒打幾隻怪就走了。
+    """
+
+    def __init__(self):
+        self.layer_index: Optional[int] = None
+        self.bounce_count: int = 0
+        self._at_bound: bool = False
+
+    def update(self, current_layer: Optional[LayerConfig], abs_mm_x: int) -> int:
+        """回傳目前這一層累積的折返次數;current_layer 為 None 時回傳 0"""
+        if current_layer is None:
+            return 0
+
+        if self.layer_index != current_layer.index:
+            self.layer_index = current_layer.index
+            self.bounce_count = 0
+            self._at_bound = False
+
+        at_bound_now = abs_mm_x <= current_layer.left_bound or abs_mm_x >= current_layer.right_bound
+        if at_bound_now and not self._at_bound:
+            self.bounce_count += 1
+        self._at_bound = at_bound_now
+
+        return self.bounce_count
+
+    def reset(self):
+        self.layer_index = None
+        self.bounce_count = 0
+        self._at_bound = False
 
 
 # ---------------------------------------------------------
@@ -1121,6 +1324,7 @@ class ReconnectManager:
         self._click_ratio(game_win, self.rc.server_name_ratio, "server_name")
         time.sleep(2.0)
 
+        '''
         # 展開頻道選單,捲動到最下面
         self._click_ratio(game_win, self.rc.channel_scrollbar_ratio, "scroll_to_bottom")
         time.sleep(2.0)
@@ -1136,12 +1340,12 @@ class ReconnectManager:
         time.sleep(2.0)
         pydirectinput.press('down')
         time.sleep(2.0)
-        
         '''
+
         # 點擊頻道 ch.3
         self._click_ratio(game_win, self.rc.channel_area_ratio_ch3, "channel_area")
         time.sleep(2.0)
-        '''
+
 
         # 進入伺服器
         self._click_ratio(game_win, self.rc.channel_enter_ratio, "channel_area")
@@ -1192,6 +1396,28 @@ if __name__ == "__main__":
     cfg = BotConfig()
     rc_cfg = ReconnectConfig()
 
+    cfg.layers = [
+        # index=0: 最下層平台
+        LayerConfig(index=0, y_min=169, y_max=174, left_bound=40, right_bound=110),
+    
+        # index=1: 中間層平台
+        LayerConfig(index=1, y_min=151, y_max=155, left_bound=55, right_bound=77),
+    
+        # index=2: 上層平台
+        LayerConfig(index=2, y_min=128, y_max=132, left_bound=47, right_bound=77),
+    
+    ]
+    
+    cfg.ropes = [
+        # 右下平台(0) <-> 中間層平台(1) 的繩索
+        RopeConfig(x=52, lower_layer=0, upper_layer=1),
+    
+        # 中間層平台(1) <-> 上層平台(2) 的繩索
+        RopeConfig(x=56, lower_layer=1, upper_layer=2),
+    
+    ]
+
+
     # 初始化重連模組
     reconnector = ReconnectManager(rc_cfg)
 
@@ -1199,6 +1425,7 @@ if __name__ == "__main__":
     move_direction = "left"
     timed_key_task = TimedKeyTrigger(key='n', interval_seconds=120)
     rope_traverser = RopeTraverser(cfg)
+    patrol_lap_tracker = PatrolLapTracker()
     tick_count = 0
 
     # 上次偵測到的角色/補師位置,用來做局部搜尋加速
@@ -1284,13 +1511,15 @@ if __name__ == "__main__":
             last_player_pos = player_target_pos
             px, py = player_target_pos
 
-            # 補師位置 (找不到時為 None,屬正常情況,不中止流程)
-            healer_target_pos = locate_tag_with_fallback(
-                game_img_gray, cfg.healer_tag_path, cfg.healer_tag_threshold,
-                last_healer_pos, cfg.healer_search_margin
-            )
-            if healer_target_pos is not None:
-                last_healer_pos = healer_target_pos
+            # 補師位置 (找不到時為 None,屬正常情況,不中止流程;關閉補師跟隨模組時直接略過搜尋)
+            healer_target_pos = None
+            if cfg.enable_healer_follow:
+                healer_target_pos = locate_tag_with_fallback(
+                    game_img_gray, cfg.healer_tag_path, cfg.healer_tag_threshold,
+                    last_healer_pos, cfg.healer_search_margin
+                )
+                if healer_target_pos is not None:
+                    last_healer_pos = healer_target_pos
 
             # 小地圖玩家座標
             abs_pos = get_minimap_player_abs_pos(game_img, win)
@@ -1301,10 +1530,11 @@ if __name__ == "__main__":
                 continue
             abs_mm_x, abs_mm_y = abs_pos
 
-            print(f"玩家位置: {player_target_pos}, 補師位置: {healer_target_pos}, "
-                  f"小地圖座標: ({abs_mm_x}, {abs_mm_y}), 怪物數: {len(monster_positions)}")
-
             current_layer = find_layer_by_y(abs_mm_y, cfg.layers) if cfg.layers else None
+
+            print(f"玩家位置: {player_target_pos}, 補師位置: {healer_target_pos}, "
+                  f"小地圖座標: ({abs_mm_x}, {abs_mm_y}), 怪物數: {len(monster_positions)}, "
+                  f"平台: {current_layer.index if current_layer else '無'}")
 
             if cfg.layers:
                 if current_layer is None:
@@ -1338,18 +1568,46 @@ if __name__ == "__main__":
                 continue
 
             # 跨平台爬繩模組:若正在爬繩/掉落中,由它接管本次移動判斷
-            handled_by_rope = rope_traverser.step(abs_mm_x, abs_mm_y, cfg.layers)
+            handled_by_rope = rope_traverser.step(
+                abs_mm_x, abs_mm_y, cfg.layers,
+                player_screen_gray=game_img_gray, player_pos=player_target_pos
+            )
 
             if not handled_by_rope:
                 cooldown_ok = (time.time() - rope_traverser.last_transition_time) >= cfg.post_transition_cooldown
+                bounce_count = patrol_lap_tracker.update(current_layer, abs_mm_x)
 
-                if current_layer is not None and cooldown_ok:
+                if current_layer is not None and cooldown_ok and \
+                        bounce_count >= cfg.min_patrol_bounces_before_climb:
                     rope = find_rope_near_x(abs_mm_x, current_layer.index, cfg.ropes, cfg.rope_x_tolerance)
                     if rope is not None and rope_traverser.can_start(rope):
-                        direction = "up" if current_layer.index == rope.lower_layer else "down"
-                        keyup_all()
-                        rope_traverser.start(rope, direction)
-                        handled_by_rope = True
+                        target_layer_index = rope.upper_layer if current_layer.index == rope.lower_layer \
+                            else rope.lower_layer
+
+                        target_occupied = False
+                        if cfg.detect_other_players:
+                            other_positions = get_minimap_positions_by_color(
+                                game_img, win, cfg.other_player_hsv_lower, cfg.other_player_hsv_upper,
+                                lower_hsv2=cfg.other_player_hsv_lower2, upper_hsv2=cfg.other_player_hsv_upper2,
+                                min_area=cfg.dot_min_area, max_area=cfg.dot_max_area
+                            )
+                            teammate_positions = get_minimap_positions_by_color(
+                                game_img, win, cfg.teammate_hsv_lower, cfg.teammate_hsv_upper,
+                                min_area=cfg.dot_min_area, max_area=cfg.dot_max_area
+                            )
+                            occupied_layers = find_occupied_layers(
+                                other_positions + teammate_positions, cfg.layers
+                            )
+                            target_occupied = target_layer_index in occupied_layers
+
+                        if target_occupied:
+                            print(f"[跨平台爬繩模組] 目標圖層 {target_layer_index} 偵測到其他玩家/隊友,暫緩換層")
+                        else:
+                            direction = "up" if current_layer.index == rope.lower_layer else "down"
+                            keyup_all()
+                            rope_traverser.start(rope, direction)
+                            patrol_lap_tracker.reset()
+                            handled_by_rope = True
 
                 if not handled_by_rope:
                     left_bound = current_layer.left_bound if current_layer else None
