@@ -138,6 +138,11 @@ class BotConfig:
     # 連續幾次都偵測不到爬繩姿勢,才視為「真的已經離開繩索」,避免單一 tick 誤判
     climb_pose_lost_confirm_ticks: int = 2
 
+    # 爬繩(往上)期間額外持續按著這個方向鍵,直到確認爬完為止才放開。
+    # 用於繩索緊貼平台邊緣的地圖:角色爬到頂端剛好落在邊緣,容易被怪物撞下去,
+    # 持續按著方向鍵可以讓角色一到平台就順勢往內側移動一點。設為 None 停用此行為。
+    climb_drift_key: Optional[str] = None
+
     # 同一層至少要巡邏(觸碰邊界折返)幾次,才允許嘗試爬繩換到下一層,
     # 一趟「從左邊界走到右邊界」算 1 次折返,一個來回(左->右->左)則是 2 次。
     min_patrol_bounces_before_climb: int = 2
@@ -775,6 +780,8 @@ class RopeTraverser:
       climb_pose_lost_confirm_ticks 次都偵測不到爬繩姿勢才視為爬完(而不是用小地圖 Y 座標推測——
       小地圖太小,Y 範圍常常在角色實際到達平台前就先進入判定範圍,導致提前放開爬繩鍵卡在半路)。
       往下掉落是瞬間動作,對齊後按一次即完成,不會經過 grab 階段。
+      若設定了 cfg.climb_drift_key,確認抓到繩子起就會額外持續按著這個方向鍵直到爬完放開,
+      讓角色到達平台時順勢往內側移動一點,避免落在繩索正上方的平台邊緣被怪物撞下去。
     """
 
     def __init__(self, cfg: BotConfig):
@@ -861,6 +868,8 @@ class RopeTraverser:
                     else:
                         self.phase = "climb"
                         pydirectinput.keyDown(self.cfg.climb_up_key, _pause=False)
+                        if self.cfg.climb_drift_key:
+                            pydirectinput.keyDown(self.cfg.climb_drift_key, _pause=False)
                 else:
                     # 掉落下樓:按住下鍵再點一下跳躍鍵,下一個 tick 再放開下鍵
                     self.phase = "climb"
@@ -884,6 +893,8 @@ class RopeTraverser:
             if climbing:
                 print("[跨平台爬繩模組] 已偵測到爬繩姿勢,確認抓到繩子")
                 self.phase = "climb"
+                if self.cfg.climb_drift_key:
+                    pydirectinput.keyDown(self.cfg.climb_drift_key, _pause=False)
                 return True
 
             if self.grab_attempts >= self.cfg.grab_max_retries:
@@ -1489,6 +1500,9 @@ if __name__ == "__main__":
     cfg = BotConfig()
     rc_cfg = ReconnectConfig()
 
+    # 這張地圖的繩索都在平台左側,爬到頂端容易卡在邊緣被怪物撞下去,爬繩時額外持續按右鍵往內側移動
+    cfg.climb_drift_key = 'right'
+
     cfg.layers = [
         # index=0: 最下層平台
         LayerConfig(index=0, y_min=168, y_max=173, left_bound=40, right_bound=110),
@@ -1670,6 +1684,7 @@ if __name__ == "__main__":
                             teammate_positions = get_teammate_minimap_positions(game_img, win)
                             if other_positions or teammate_positions:
                                 print(f"[跨平台爬繩模組] 偵測位置 - 其他玩家:{other_positions}, 隊友:{teammate_positions}")
+                                save_debug_snapshot(win, game_img, player_target_pos, cfg, path=f"debug_game_screen{tick_count}.png")
 
                             occupied_layers = find_occupied_layers(
                                 other_positions + teammate_positions, cfg.layers
