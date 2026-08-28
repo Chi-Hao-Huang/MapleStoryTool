@@ -151,6 +151,15 @@ class BotConfig:
     # 目標平台小地圖上若偵測到其他玩家或隊友的色點,本次就放棄換到那一層,留在原地繼續巡邏。
     detect_other_players: bool = True
 
+    # ---- 卡住偵測模組 (安全網,獨立於 RopeTraverser 運作) ----
+    # 角色若因為被怪物擊退等原因意外掛在繩子上(不是 RopeTraverser 主動觸發的爬繩),
+    # 小地圖座標會長時間停在原地不動、且左右方向鍵操控不了 X 座標。
+    # 連續 stuck_ticks_threshold 個 tick 座標都沒什麼變化就視為卡住,
+    # 若同時比對到 climbing_pose_template,就嘗試按住爬繩鍵直到脫離繩索為止。
+    stuck_position_tolerance: int = 1            # 座標變化在這個範圍內視為「沒有移動」
+    stuck_ticks_threshold: int = 30              # 連續幾個 tick 沒有移動才視為卡住
+    stuck_recovery_timeout_seconds: float = 8.0  # 嘗試脫困最多幾秒,逾時放棄,避免卡死在回復邏輯裡
+
 # ---------------------------------------------------------
 # tool
 # ---------------------------------------------------------
@@ -1002,6 +1011,73 @@ class PatrolLapTracker:
         self._at_bound = False
 
 
+class StuckWatchdog:
+    """
+    偵測角色是否長時間停在同一個小地圖座標(可能被怪物擊退等原因意外掛在繩子上,
+    而不是透過 RopeTraverser 主動觸發的爬繩)。
+
+    連續 cfg.stuck_ticks_threshold 個 tick 座標都沒什麼變化就視為卡住;此時若比對
+    climbing_pose_template 確認角色真的掛在繩子上,就按住爬繩鍵嘗試往上爬,
+    直到偵測不到爬繩姿勢(代表已經踩上平台、左右方向鍵應該可以重新操控 X 座標)為止,
+    或超過 stuck_recovery_timeout_seconds 逾時放棄。
+    """
+
+    def __init__(self, cfg: BotConfig):
+        self.cfg = cfg
+        self.last_pos: Optional[Tuple[int, int]] = None
+        self.stuck_ticks: int = 0
+        self.recovering: bool = False
+        self.recovery_start_time: float = 0.0
+
+    def update(self, abs_mm_x, abs_mm_y, player_screen_gray, player_pos) -> bool:
+        """每個 tick 呼叫一次。回傳 True 代表本 tick 已由脫困邏輯接管,不應再執行一般巡邏判斷。"""
+        if self.recovering:
+            still_climbing = is_player_climbing(
+                player_screen_gray, player_pos,
+                self.cfg.climbing_pose_template, self.cfg.climbing_pose_threshold,
+                self.cfg.climbing_pose_search_margin
+            )
+            timed_out = (time.time() - self.recovery_start_time) > self.cfg.stuck_recovery_timeout_seconds
+            if not still_climbing or timed_out:
+                reason = "逾時放棄" if timed_out else "已脫離繩索"
+                print(f"[卡住偵測模組] 脫困動作結束 ({reason})")
+                pydirectinput.keyUp(self.cfg.climb_up_key, _pause=False)
+                self.recovering = False
+                self.stuck_ticks = 0
+                self.last_pos = (abs_mm_x, abs_mm_y)
+                return False
+            return True
+
+        current_pos = (abs_mm_x, abs_mm_y)
+        if self.last_pos is not None and \
+                abs(current_pos[0] - self.last_pos[0]) <= self.cfg.stuck_position_tolerance and \
+                abs(current_pos[1] - self.last_pos[1]) <= self.cfg.stuck_position_tolerance:
+            self.stuck_ticks += 1
+        else:
+            self.stuck_ticks = 0
+        self.last_pos = current_pos
+
+        if self.stuck_ticks < self.cfg.stuck_ticks_threshold:
+            return False
+
+        if is_player_climbing(player_screen_gray, player_pos,
+                               self.cfg.climbing_pose_template, self.cfg.climbing_pose_threshold,
+                               self.cfg.climbing_pose_search_margin):
+            print(f"[卡住偵測模組] 座標連續 {self.stuck_ticks} 個 tick 沒有變化,"
+                  f"且偵測到爬繩姿勢,嘗試按住爬繩鍵脫困")
+            keyup_all()
+            pydirectinput.keyDown(self.cfg.climb_up_key, _pause=False)
+            self.recovering = True
+            self.recovery_start_time = time.time()
+            self.stuck_ticks = 0
+            return True
+
+        # 卡住但不是掛在繩子上,交由其他既有機制處理(例如找不到玩家標籤時的重新判斷),
+        # 這裡只歸零計數,避免每個 tick 都重複比對爬繩姿勢
+        self.stuck_ticks = 0
+        return False
+
+
 # ---------------------------------------------------------
 # debug 模組
 # ---------------------------------------------------------
@@ -1560,6 +1636,7 @@ if __name__ == "__main__":
     timed_key_task = TimedKeyTrigger(key='n', interval_seconds=120)
     rope_traverser = RopeTraverser(cfg)
     patrol_lap_tracker = PatrolLapTracker()
+    stuck_watchdog = StuckWatchdog(cfg)
     tick_count = 0
 
     # 上次偵測到的角色/補師位置,用來做局部搜尋加速
@@ -1686,6 +1763,12 @@ if __name__ == "__main__":
                 if cfg.debug_save_image:
                     save_debug_image(debug_img)
                 #time.sleep(cfg.main_loop_sleep)
+                continue
+
+            # 卡住偵測模組(安全網):RopeTraverser 沒有主動在爬繩時,若座標長時間沒變化
+            # 且確認掛在繩子上,由它接管按住爬繩鍵嘗試脫困,本 tick 不執行其他判斷
+            if not rope_traverser.active and \
+                    stuck_watchdog.update(abs_mm_x, abs_mm_y, game_img_gray, player_target_pos):
                 continue
 
             # 跨平台爬繩模組:若正在爬繩/掉落中,由它接管本次移動判斷

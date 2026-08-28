@@ -59,6 +59,7 @@
       - **連續確認**：`OccupancyConfirmer` 要求同一個目標平台連續 `other_player_confirm_ticks`（預設 3）次判斷都偵測到人，才真的視為佔用並放棄換層；真正待在平台上的玩家/隊友會持續停留很多 tick，單一 tick 的雜訊（殘影、特效、偵測抖動）通常撐不了這麼多次就會被排除。換了不同的目標平台、或成功開始爬繩時會重新歸零計算。
       - **排查誤判**：若懷疑判斷有誤，主迴圈只要偵測到任何色點就會印出 `[跨平台爬繩模組] 偵測位置 - 其他玩家:[...], 隊友:[...]`，可以對照印出的座標判斷是真的有人還是誤判；也可以開 `cfg.debug = True` 並把 `build_debug_image` 的 `show_other_players` 打開（主迴圈已依 `cfg.detect_other_players` 自動帶入），偵測到的色點會用十字標記畫在 `debug_game_screen.png` 上並標註座標，方便直接對照畫面確認是不是固定 UI 元素被誤判。
     - **爬繩時避免落在邊緣**：若地圖的繩索緊貼平台邊緣，角色爬到頂端容易落在邊緣被怪物撞下去，可設定 `cfg.climb_drift_key`（例如 `'right'`），從確認抓到繩子起、直到確認爬完放開爬繩鍵為止，額外持續按著這個方向鍵，讓角色一到平台就順勢往內側移動一點。預設 `None` 不啟用。
+    - **卡住偵測 (`StuckWatchdog`)**：獨立於 `RopeTraverser` 運作的安全網。角色若因為被怪物擊退等原因意外掛在繩子上（不是 `RopeTraverser` 主動觸發的爬繩），小地圖座標會長時間停在原地不動、左右方向鍵也操控不了 X 座標。連續 `stuck_ticks_threshold`（預設 30）個 tick 座標變化都在 `stuck_position_tolerance` 內就視為卡住；此時若比對 `climbing_pose_template` 確認真的掛在繩子上，就按住 `climb_up_key` 嘗試往上爬，直到偵測不到爬繩姿勢（代表已踩上平台）或超過 `stuck_recovery_timeout_seconds`（預設 8 秒）逾時放棄為止。只有在 `RopeTraverser` 目前沒有主動接管移動時才會運作，避免兩邊互相搶按鍵。
     - 若 `cfg.layers` 保持空清單，此模組完全不介入，行為會退回原本單層 `minimap_left_bound` / `minimap_right_bound` 巡邏（向後相容既有設定）。
     - **需要額外準備的範本圖**：從一張角色正在爬繩的截圖中，裁出角色本體(建議不含名字標籤)存成 `image/climbing_pose.png`，比對門檻可依實際比對分數調整 `climbing_pose_threshold`。
     - **校正方式**：開啟 `cfg.debug = True` 並在 `cfg.layers` / `cfg.ropes` 填入初步猜測值，執行後查看 `debug_game_screen.png` 上小地圖 ROI 內以綠色框標出的平台 Y 範圍、以紅色直線標出的繩索 X 座標，對照小地圖實際的平台與繩索位置反覆微調座標即可。因為座標本來就是整張截圖的絕對像素座標，也可以不開 debug、直接用任何一張遊戲視窗截圖搭配圖片檢視器，點選小地圖上想要的位置讀出像素座標來填。
