@@ -755,11 +755,23 @@ def find_layer_by_y(abs_mm_y, layers: List[LayerConfig]) -> Optional[LayerConfig
 
 def find_rope_near_x(abs_mm_x, layer_index, ropes: List[RopeConfig], tolerance) -> Optional[RopeConfig]:
     """在目前平台中,找出 X 座標(遊戲視窗絕對像素座標,見 RopeConfig 說明)落在容忍範圍內、
-    且與這一層相連(上層或下層皆可)的繩索"""
+    且與這一層相連(上層或下層皆可)的繩索。用於「往上爬」的情境——抓繩需要對齊繩索的確切位置。"""
     for rope in ropes:
         if layer_index not in (rope.lower_layer, rope.upper_layer):
             continue
         if abs(abs_mm_x - rope.x) <= tolerance:
+            return rope
+    return None
+
+
+def find_rope_down_from_layer(layer_index, ropes: List[RopeConfig]) -> Optional[RopeConfig]:
+    """
+    找出可以從這一層直接往下掉落到下層的繩索連接,不檢查 X 座標。
+    掉落(下+跳躍鍵)是瞬間動作,平台上任何位置都能直接掉到下層,不像往上爬繩需要先對齊繩索位置;
+    有些繩索的 X 座標甚至落在下層平台自己的巡邏邊界之外,單靠 find_rope_near_x 永遠不會被觸發到。
+    """
+    for rope in ropes:
+        if rope.upper_layer == layer_index:
             return rope
     return None
 
@@ -782,6 +794,9 @@ class RopeTraverser:
       往下掉落是瞬間動作,對齊後按一次即完成,不會經過 grab 階段。
       若設定了 cfg.climb_drift_key,確認抓到繩子起就會額外持續按著這個方向鍵直到爬完放開,
       讓角色到達平台時順勢往內側移動一點,避免落在繩索正上方的平台邊緣被怪物撞下去。
+
+    start() 也可以傳入 skip_align=True(僅用於 direction="down"),跳過 "align" 直接觸發掉落——
+    掉落是瞬間動作,平台上任何位置都能觸發,不需要先走到繩索的 X 座標才能掉下去。
     """
 
     def __init__(self, cfg: BotConfig):
@@ -805,18 +820,33 @@ class RopeTraverser:
             return False
         return True
 
-    def start(self, rope: RopeConfig, direction: str):
+    def start(self, rope: RopeConfig, direction: str, skip_align: bool = False):
+        """
+        skip_align=True 用於「往下掉落且不需要對齊 X 座標」的情境:掉落是瞬間動作,
+        平台上任何位置都能觸發,不用像往上爬繩一樣先走到繩索的確切位置。
+        """
         action_label = "爬繩上樓" if direction == "up" else "掉落下樓"
         print(f"[跨平台爬繩模組] 開始{action_label} (繩索 X={rope.x}, "
               f"平台 {rope.lower_layer} <-> {rope.upper_layer})")
         self.active = True
         self.rope = rope
         self.direction = direction
-        self.phase = "align"
         self.jump_dir = None
         self.start_time = time.time()
         self.grab_attempts = 0
         self.pose_lost_streak = 0
+
+        if skip_align and direction == "down":
+            self.phase = "climb"
+            self._perform_drop()
+        else:
+            self.phase = "align"
+
+    def _perform_drop(self):
+        """按住下鍵再點一下跳躍鍵,觸發掉落到下層平台的動作(瞬間動作,不需對齊 X 座標)"""
+        pydirectinput.keyDown(self.cfg.drop_down_key, _pause=False)
+        time.sleep(0.05)
+        pydirectinput.press(self.cfg.drop_jump_key, _pause=False)
 
     def _finish(self, reason=""):
         keyup_all(('left', 'right', self.cfg.climb_up_key, self.cfg.drop_down_key))
@@ -871,11 +901,8 @@ class RopeTraverser:
                         if self.cfg.climb_drift_key:
                             pydirectinput.keyDown(self.cfg.climb_drift_key, _pause=False)
                 else:
-                    # 掉落下樓:按住下鍵再點一下跳躍鍵,下一個 tick 再放開下鍵
                     self.phase = "climb"
-                    pydirectinput.keyDown(self.cfg.drop_down_key, _pause=False)
-                    time.sleep(0.05)
-                    pydirectinput.press(self.cfg.drop_jump_key, _pause=False)
+                    self._perform_drop()
             else:
                 move_dir = "right" if dx > 0 else "left"
                 self.jump_dir = move_dir
@@ -1508,10 +1535,10 @@ if __name__ == "__main__":
         LayerConfig(index=0, y_min=168, y_max=173, left_bound=40, right_bound=110),
     
         # index=1: 中間層平台
-        LayerConfig(index=1, y_min=150, y_max=154, left_bound=55, right_bound=77),
+        LayerConfig(index=1, y_min=150, y_max=154, left_bound=55, right_bound=80),
     
         # index=2: 上層平台
-        LayerConfig(index=2, y_min=127, y_max=131, left_bound=47, right_bound=77),
+        LayerConfig(index=2, y_min=127, y_max=131, left_bound=42, right_bound=80),
     
     ]
     
@@ -1673,10 +1700,22 @@ if __name__ == "__main__":
 
                 if current_layer is not None and cooldown_ok and \
                         bounce_count >= cfg.min_patrol_bounces_before_climb:
-                    rope = find_rope_near_x(abs_mm_x, current_layer.index, cfg.ropes, cfg.rope_x_tolerance)
+                    # 往下掉落不需要對齊繩索 X 座標,平台上任何位置都能觸發,優先判斷;
+                    # can_start 的冷卻機制會避免剛從下層爬上來就立刻掉回去,讓角色有機會先往上探索。
+                    rope = find_rope_down_from_layer(current_layer.index, cfg.ropes)
+                    direction = "down"
+                    skip_align = True
+
+                    if rope is None or not rope_traverser.can_start(rope):
+                        # 沒有可掉落的下層、或還在冷卻中 -> 改判斷往上爬(需要對齊繩索 X 座標)
+                        rope = find_rope_near_x(abs_mm_x, current_layer.index, cfg.ropes, cfg.rope_x_tolerance)
+                        direction = "up"
+                        skip_align = False
+                        if rope is not None and rope.lower_layer != current_layer.index:
+                            rope = None  # find_rope_near_x 也會配對到下層繩索,這裡只要「往上」的
+
                     if rope is not None and rope_traverser.can_start(rope):
-                        target_layer_index = rope.upper_layer if current_layer.index == rope.lower_layer \
-                            else rope.lower_layer
+                        target_layer_index = rope.upper_layer if direction == "up" else rope.lower_layer
 
                         target_occupied = False
                         if cfg.detect_other_players:
@@ -1684,7 +1723,7 @@ if __name__ == "__main__":
                             teammate_positions = get_teammate_minimap_positions(game_img, win)
                             if other_positions or teammate_positions:
                                 print(f"[跨平台爬繩模組] 偵測位置 - 其他玩家:{other_positions}, 隊友:{teammate_positions}")
-                                save_debug_snapshot(win, game_img, player_target_pos, cfg, path=f"debug_game_screen{tick_count}.png")
+                                #save_debug_snapshot(win, game_img, player_target_pos, cfg, path=f"debug_game_screen{tick_count}.png")
 
                             occupied_layers = find_occupied_layers(
                                 other_positions + teammate_positions, cfg.layers
@@ -1694,9 +1733,8 @@ if __name__ == "__main__":
                         if target_occupied:
                             print(f"[跨平台爬繩模組] 目標平台 {target_layer_index} 偵測到其他玩家/隊友,暫緩換層")
                         else:
-                            direction = "up" if current_layer.index == rope.lower_layer else "down"
                             keyup_all()
-                            rope_traverser.start(rope, direction)
+                            rope_traverser.start(rope, direction, skip_align=skip_align)
                             patrol_lap_tracker.reset()
                             handled_by_rope = True
 
