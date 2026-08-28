@@ -42,21 +42,22 @@
    - 可對遊戲下方血條與魔力條區域進行 RGBA 色彩百分比計算，自動判斷狀態並觸發補血或休息 (`read_hp_mp`, `handle_hp_mp`)。
 
 9. **視覺化除錯模組 (Debug Visualizer)**
-   - `build_debug_image` 會繪製全畫面的偵測標記，包括 HP/MP 框、小地圖 ROI 與玩家黃點、角色中心點與攻擊警戒半徑、補師同層判定帶與跟隨死區、每隻怪物的距離標註，以及下方 10. 的圖層/繩索校正輔助線。
+   - `build_debug_image` 會繪製全畫面的偵測標記，包括 HP/MP 框、小地圖 ROI 與玩家黃點、角色中心點與攻擊警戒半徑、補師同層判定帶與跟隨死區、每隻怪物的距離標註，以及下方 10. 的平台/繩索校正輔助線。
    - `cfg.debug = True` 時主迴圈會改走除錯分支（不執行實際移動/攻擊）；`debug_show_window` 可即時顯示監看視窗，`debug_save_image` 會輸出為 `debug_game_screen.png`。
 
 10. **跨平台爬繩模組 (Rope Traverser)**
     - 由於主畫面座標會隨鏡頭捲動而改變，此模組改用小地圖上的色點（不受鏡頭影響）來判斷角色所在位置。但 `LayerConfig`/`RopeConfig` 存的座標**不是**小地圖裁切區域內部的相對值（0~150 / 0~100 那個範圍），而是 `get_minimap_player_abs_pos` 已經把小地圖在視窗內的偏移量加回去、換算出來的**遊戲視窗絕對像素座標**——跟 `debug_game_screen.png`（或任何一張完整遊戲視窗截圖）裡的像素座標是同一個座標系。校正時直接把截圖丟進圖片檢視器、點選小地圖上的色點讀出像素座標填入即可，不需要額外扣掉小地圖本身的位移量。
-    - 用 `LayerConfig` 定義地圖有哪些平台圖層：Y 座標範圍 + 該層專屬的左右巡邏邊界；用 `RopeConfig` 定義每條繩索的 X 座標，以及它連接的上/下層 index。兩者集中設定在 `BotConfig.layers` / `BotConfig.ropes`。
+    - 用 `LayerConfig` 定義地圖有哪些平台：Y 座標範圍 + 該層專屬的左右巡邏邊界；用 `RopeConfig` 定義每條繩索的 X 座標，以及它連接的上/下層 index。兩者集中設定在 `BotConfig.layers` / `BotConfig.ropes`。
     - `RopeTraverser` 狀態機負責跨多個 tick 執行「左右對齊繩索 X 座標 (`align`) → 抓繩 (`grab`) → 按住 `climb_up_key` 往上爬 / 按住 `drop_down_key` 再點 `drop_jump_key` 直接掉落到下層 (`climb`) → 偵測小地圖 Y 座標進入目標層範圍即完成」，完成前主迴圈的一般巡邏與攻擊判斷會暫時讓位給它。
     - **抓繩動作優化**：對齊繩索 X 座標後，往上爬預設不會直接站著按 `climb_up_key`，而是先用「方向鍵 + 跳躍鍵 (`drop_jump_key`)」斜向跳起再按住爬繩鍵，比原地站著按爬繩鍵更容易真的咬到繩子；此行為由 `use_jump_to_grab_rope` 控制，容忍度、跳躍持續時間與重試次數分別對應 `grab_x_tolerance` / `grab_hold_seconds` / `grab_retry_interval` / `grab_max_retries`。
     - **爬繩姿勢範本確認**：新增 `is_player_climbing`，用一張「角色爬繩姿勢」範本圖 (`climbing_pose_template`，預設 `image/climbing_pose.png`) 在玩家座標附近比對，確認角色是否真的抓到繩子在爬，而不是單憑「已經按下爬繩鍵」就假設一定成功；`grab` 階段沒偵測到爬繩姿勢就會依 `grab_retry_interval` 自動重跳。
-    - 主迴圈依目前所在圖層計算該層的巡邏邊界，並在角色小地圖 X 座標接近某條繩索時（`rope_x_tolerance`）觸發爬繩/掉落，藉此讓角色依序走遍地圖上所有已設定的平台並持續打怪；`min_seconds_between_climbs` 避免剛完成動作又立刻折返、`post_transition_cooldown` 讓爬繩/掉落動畫播完再恢復巡邏判斷、`climb_timeout_seconds` 則是卡住時的逾時保護。
-    - **同層巡邏次數門檻**：`PatrolLapTracker` 會計算角色在目前圖層已經觸碰邊界折返幾次，未達到 `min_patrol_bounces_before_climb`（預設 3 次）之前，就算靠近繩索也不會觸發爬繩，避免角色一到繩索附近就馬上換平台、同一層打不到幾隻怪就走了；換到新圖層或成功開始爬繩時計數會自動歸零重算。折返次數是以「觸碰邊界」為單位：左邊界走到右邊界算 1 次，一個完整來回(左→右→左)則是 2 次，想要「完整巡邏 3 趟」可以把這個值設成 6。
-    - **其他玩家 / 隊友避讓**：確定要爬繩換層前，會用 `get_other_player_minimap_positions` / `get_teammate_minimap_positions` 比對小地圖上「其他玩家」(`#EE0000` 紅色) 與「隊友」(`#FF7700` 橘色) 的色點，透過 `find_occupied_layers` 換算成所在圖層。若這次要移動過去的目標圖層已經有其他玩家或隊友，就放棄這次換層、留在原地繼續巡邏，下次滿足巡邏次數門檻時會再重新判斷一次；此行為由 `cfg.detect_other_players` 開關控制。這兩種色點的 HSV 顏色範圍是遊戲固定顯示色，比照小地圖自己黃點 (`find_player_on_minimap`) 的作法直接寫死在對應函式內，不放進 `BotConfig`。
+    - 主迴圈依目前所在平台計算該層的巡邏邊界，並在角色小地圖 X 座標接近某條繩索時（`rope_x_tolerance`）觸發爬繩/掉落，藉此讓角色依序走遍地圖上所有已設定的平台並持續打怪；`min_seconds_between_climbs` 避免剛完成動作又立刻折返、`post_transition_cooldown` 讓爬繩/掉落動畫播完再恢復巡邏判斷、`climb_timeout_seconds` 則是卡住時的逾時保護。
+    - **同層巡邏次數門檻**：`PatrolLapTracker` 會計算角色在目前平台已經觸碰邊界折返幾次，未達到 `min_patrol_bounces_before_climb`（預設 3 次）之前，就算靠近繩索也不會觸發爬繩，避免角色一到繩索附近就馬上換平台、同一層打不到幾隻怪就走了；換到新平台或成功開始爬繩時計數會自動歸零重算。折返次數是以「觸碰邊界」為單位：左邊界走到右邊界算 1 次，一個完整來回(左→右→左)則是 2 次，想要「完整巡邏 3 趟」可以把這個值設成 6。
+    - **其他玩家 / 隊友避讓**：確定要爬繩換層前，會用 `get_other_player_minimap_positions` / `get_teammate_minimap_positions` 比對小地圖上「其他玩家」(`#EE0000` 紅色) 與「隊友」(`#FF7700` 橘色) 的色點，透過 `find_occupied_layers` 換算成所在平台。若這次要移動過去的目標平台已經有其他玩家或隊友，就放棄這次換層、留在原地繼續巡邏，下次滿足巡邏次數門檻時會再重新判斷一次；此行為由 `cfg.detect_other_players` 開關控制。這兩種色點的 HSV 顏色範圍是遊戲固定顯示色，比照小地圖自己黃點 (`find_player_on_minimap`) 的作法直接寫死在對應函式內，不放進 `BotConfig`。
+      - **排查誤判**：若懷疑判斷有誤（例如小地圖上的固定 UI 元素顏色跟 `#EE0000`/`#FF7700` 太接近），主迴圈只要偵測到任何色點就會印出 `[跨平台爬繩模組] 偵測到色點 - 其他玩家:[...] 隊友:[...]`，可以對照印出的座標判斷是真的有人還是誤判；也可以開 `cfg.debug = True` 並把 `build_debug_image` 的 `show_other_players` 打開（主迴圈已依 `cfg.detect_other_players` 自動帶入），偵測到的色點會用十字標記畫在 `debug_game_screen.png` 上並標註座標，方便直接對照畫面確認是不是固定 UI 元素被誤判。
     - 若 `cfg.layers` 保持空清單，此模組完全不介入，行為會退回原本單層 `minimap_left_bound` / `minimap_right_bound` 巡邏（向後相容既有設定）。
     - **需要額外準備的範本圖**：從一張角色正在爬繩的截圖中，裁出角色本體(建議不含名字標籤)存成 `image/climbing_pose.png`，比對門檻可依實際比對分數調整 `climbing_pose_threshold`。
-    - **校正方式**：開啟 `cfg.debug = True` 並在 `cfg.layers` / `cfg.ropes` 填入初步猜測值，執行後查看 `debug_game_screen.png` 上小地圖 ROI 內以綠色框標出的圖層 Y 範圍、以紅色直線標出的繩索 X 座標，對照小地圖實際的平台與繩索位置反覆微調座標即可。因為座標本來就是整張截圖的絕對像素座標，也可以不開 debug、直接用任何一張遊戲視窗截圖搭配圖片檢視器，點選小地圖上想要的位置讀出像素座標來填。
+    - **校正方式**：開啟 `cfg.debug = True` 並在 `cfg.layers` / `cfg.ropes` 填入初步猜測值，執行後查看 `debug_game_screen.png` 上小地圖 ROI 內以綠色框標出的平台 Y 範圍、以紅色直線標出的繩索 X 座標，對照小地圖實際的平台與繩索位置反覆微調座標即可。因為座標本來就是整張截圖的絕對像素座標，也可以不開 debug、直接用任何一張遊戲視窗截圖搭配圖片檢視器，點選小地圖上想要的位置讀出像素座標來填。
 
 ---
 
@@ -180,7 +181,7 @@ pip install numpy opencv-python mss pygetwindow pydirectinput pyautogui pillow
 2. **座標與解析度微調**：
    - **HP/MP 條、小地圖與怪物攻擊範圍**：每個人的螢幕解析度或遊戲 UI 設定可能有所差異。建議先將 `BotConfig.debug = True` 執行一次，檢視產生的 `debug_game_screen.png`（或開啟 `debug_show_window` 即時查看）確保框選區域準確。
    - **地圖巡航邊界**：請根據當前掛機地圖的小地圖邊界，調整 `BotConfig.minimap_left_bound` 與 `minimap_right_bound`。
-   - **多層地圖跨平台爬繩**：若地圖有多個平台需要靠繩索往返（見上方模組 10.），在 `BotConfig.layers` 填入每層的 Y 範圍與該層邊界、在 `BotConfig.ropes` 填入每條繩索的 X 座標與連接的圖層 index；這些座標都是遊戲視窗的絕對像素座標（與截圖像素座標一致，不是小地圖裁切區域內部的相對值），可以開 `debug` 模式對照 `debug_game_screen.png` 上的校正輔助線微調，也可以直接用任何一張截圖搭配圖片檢視器讀取像素座標填入。
+   - **多層地圖跨平台爬繩**：若地圖有多個平台需要靠繩索往返（見上方模組 10.），在 `BotConfig.layers` 填入每層的 Y 範圍與該層邊界、在 `BotConfig.ropes` 填入每條繩索的 X 座標與連接的平台 index；這些座標都是遊戲視窗的絕對像素座標（與截圖像素座標一致，不是小地圖裁切區域內部的相對值），可以開 `debug` 模式對照 `debug_game_screen.png` 上的校正輔助線微調，也可以直接用任何一張截圖搭配圖片檢視器讀取像素座標填入。
    - **補師跟隨**：需先準備補師的名字標籤模板圖並設定 `healer_tag_path`，並依實際狀況調整 `healer_y_tolerance`（同層判定容忍度）與 `healer_x_dead_zone`（停止跟隨死區）。
 
 3. **斷線重連設定**：

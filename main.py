@@ -26,8 +26,8 @@ import subprocess
 @dataclass
 class LayerConfig:
     """
-    平台圖層設定:Y 座標落在 [y_min, y_max] 視為在這一層,並套用這一層專屬的左右巡邏邊界。
-    index 只是圖層代號,供 RopeConfig 參照連接關係用。
+    平台設定:Y 座標落在 [y_min, y_max] 視為在這一層,並套用這一層專屬的左右巡邏邊界。
+    index 只是平台代號,供 RopeConfig 參照連接關係用。
 
     這裡的座標是透過小地圖上的色點換算出來的「遊戲視窗絕對像素座標」,
     和 debug_game_screen.png(或任何一張完整遊戲視窗截圖)裡的像素座標是同一個座標系,
@@ -92,7 +92,7 @@ class BotConfig:
     healer_search_margin: int = 200
     
     # ---- debug ----
-    debug: bool = True
+    debug: bool = False
     debug_show_window: bool = False   # debug 時是否即時顯示監看視窗
     debug_save_image: bool = True   # debug 時是否額外存成檔案
     
@@ -108,7 +108,7 @@ class BotConfig:
     enable_reconnect: bool = True
 
     # ---- 跨平台爬繩模組 ----
-    # 定義地圖有哪些平台圖層(遊戲視窗絕對像素座標的 Y 範圍 + 該層左右巡邏邊界,見 LayerConfig 說明)。
+    # 定義地圖有哪些平台(遊戲視窗絕對像素座標的 Y 範圍 + 該層左右巡邏邊界,見 LayerConfig 說明)。
     # 保持空清單則完全不啟用跨層爬繩,行為退回原本單層 minimap_left_bound/right_bound 巡邏。
     layers: List[LayerConfig] = field(default_factory=list)
     # 定義每一條繩索的 X 座標(同樣是遊戲視窗絕對像素座標,見 RopeConfig 說明),
@@ -141,7 +141,7 @@ class BotConfig:
     min_patrol_bounces_before_climb: int = 1
 
     # ---- 其他玩家 / 隊友偵測 (換平台前避讓用) ----
-    # 目標圖層小地圖上若偵測到其他玩家或隊友的色點,本次就放棄換到那一層,留在原地繼續巡邏。
+    # 目標平台小地圖上若偵測到其他玩家或隊友的色點,本次就放棄換到那一層,留在原地繼續巡邏。
     detect_other_players: bool = True
 
 # ---------------------------------------------------------
@@ -680,7 +680,7 @@ def get_teammate_minimap_positions(game_img, win):
 
 
 def find_occupied_layers(positions, layers: List['LayerConfig']):
-    """依 Y 座標把每個點對應到所在圖層,回傳有出現點的圖層 index 集合"""
+    """依 Y 座標把每個點對應到所在平台,回傳有出現點的平台 index 集合"""
     occupied = set()
     for _, y in positions:
         layer = find_layer_by_y(y, layers)
@@ -715,8 +715,8 @@ def decide_move_target(player_pos, healer_pos, abs_mm_x, current_direction, cfg:
       改成朝補師的 X 座標靠攏。已經在容忍範圍內就回傳 None (代表停止移動)。
     - 否則維持原本邊界折返邏輯 (decide_move_direction)。
 
-    left_bound/right_bound: 可傳入目前所在圖層(LayerConfig)的邊界,取代 cfg 裡的預設值,
-    供跨平台爬繩模組依「目前圖層」而非全域單一邊界做巡邏判斷。
+    left_bound/right_bound: 可傳入目前所在平台(LayerConfig)的邊界,取代 cfg 裡的預設值,
+    供跨平台爬繩模組依「目前平台」而非全域單一邊界做巡邏判斷。
 
     回傳值: "left" / "right" / None (None 代表這次不移動)
     """
@@ -739,7 +739,7 @@ def decide_move_target(player_pos, healer_pos, abs_mm_x, current_direction, cfg:
 
 
 def find_layer_by_y(abs_mm_y, layers: List[LayerConfig]) -> Optional[LayerConfig]:
-    """依 Y 座標(遊戲視窗絕對像素座標,見 LayerConfig 說明)找出目前所在的平台圖層,找不到回傳 None"""
+    """依 Y 座標(遊戲視窗絕對像素座標,見 LayerConfig 說明)找出目前所在的平台,找不到回傳 None"""
     for layer in layers:
         if layer.y_min <= abs_mm_y <= layer.y_max:
             return layer
@@ -747,7 +747,7 @@ def find_layer_by_y(abs_mm_y, layers: List[LayerConfig]) -> Optional[LayerConfig
 
 
 def find_rope_near_x(abs_mm_x, layer_index, ropes: List[RopeConfig], tolerance) -> Optional[RopeConfig]:
-    """在目前圖層中,找出 X 座標(遊戲視窗絕對像素座標,見 RopeConfig 說明)落在容忍範圍內、
+    """在目前平台中,找出 X 座標(遊戲視窗絕對像素座標,見 RopeConfig 說明)落在容忍範圍內、
     且與這一層相連(上層或下層皆可)的繩索"""
     for rope in ropes:
         if layer_index not in (rope.lower_layer, rope.upper_layer):
@@ -796,7 +796,7 @@ class RopeTraverser:
     def start(self, rope: RopeConfig, direction: str):
         action_label = "爬繩上樓" if direction == "up" else "掉落下樓"
         print(f"[跨平台爬繩模組] 開始{action_label} (繩索 X={rope.x}, "
-              f"圖層 {rope.lower_layer} <-> {rope.upper_layer})")
+              f"平台 {rope.lower_layer} <-> {rope.upper_layer})")
         self.active = True
         self.rope = rope
         self.direction = direction
@@ -891,7 +891,7 @@ class RopeTraverser:
 
         if self.phase == "climb":
             if self.direction == "down":
-                # 掉落是瞬間動作,放開下鍵後就視為完成,由下個 tick 重新判斷所在圖層
+                # 掉落是瞬間動作,放開下鍵後就視為完成,由下個 tick 重新判斷所在平台
                 self._finish("掉落動作已觸發")
                 return True
 
@@ -908,8 +908,8 @@ class RopeTraverser:
 
 class PatrolLapTracker:
     """
-    追蹤角色在目前圖層已經來回巡邏(觸碰邊界折返)幾次。
-    換到新圖層時自動歸零重算,達到 cfg.min_patrol_bounces_before_climb 之前不允許嘗試爬繩換層,
+    追蹤角色在目前平台已經來回巡邏(觸碰邊界折返)幾次。
+    換到新平台時自動歸零重算,達到 cfg.min_patrol_bounces_before_climb 之前不允許嘗試爬繩換層,
     避免角色一靠近繩索附近就馬上換平台、同一層還沒打幾隻怪就走了。
     """
 
@@ -950,9 +950,10 @@ def build_debug_image(win, screen, template_path='image/mo_00065.png', threshold
                        healer_tag_path=None, healer_threshold=0.55,
                        healer_y_tolerance=30, healer_x_dead_zone=15,
                        layers: Optional[List['LayerConfig']] = None,
-                       ropes: Optional[List['RopeConfig']] = None):
+                       ropes: Optional[List['RopeConfig']] = None,
+                       show_other_players: bool = False):
     """
-    根據傳入的 screen(已經截好的 BGRA 畫面) 繪製除錯圖層,回傳 debug_img。
+    根據傳入的 screen(已經截好的 BGRA 畫面) 繪製除錯用的標記與疊圖,回傳 debug_img。
     debug 模式著重可讀性而非效能,因此這裡仍用全螢幕搜尋,不套用 ROI 加速。
     """
     hp_region, mp_region = get_hp_mp_region(win)
@@ -1007,12 +1008,26 @@ def build_debug_image(win, screen, template_path='image/mo_00065.png', threshold
         for rope in ropes:
             lower_range = layer_y_ranges.get(rope.lower_layer)
             upper_range = layer_y_ranges.get(rope.upper_layer)
-            # 兩端圖層都有設定時,只畫兩層之間的那一段;缺一邊就整條貫穿畫面方便排查設定問題
+            # 兩端平台都有設定時,只畫兩層之間的那一段;缺一邊就整條貫穿畫面方便排查設定問題
             ry1 = lower_range[0] if lower_range else 0
             ry2 = upper_range[1] if upper_range else img_h
             cv2.line(debug_img, (rope.x, ry1), (rope.x, ry2), (0, 0, 255), 1)
             cv2.putText(debug_img, f"{rope.lower_layer}<->{rope.upper_layer}",
                         (rope.x + 4, (ry1 + ry2) // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 1)
+
+    # 其他玩家 / 隊友偵測校正輔助: 把實際偵測到的色點畫出來,方便排查誤判
+    # (例如小地圖上剛好有 UI 元素、圖示顏色跟 #EE0000/#FF7700 太接近而被誤認)
+    if show_other_players:
+        for (ox, oy) in get_other_player_minimap_positions(screen, win):
+            cv2.drawMarker(debug_img, (ox, oy), (0, 0, 255), markerType=cv2.MARKER_TILTED_CROSS,
+                            markerSize=12, thickness=2)
+            cv2.putText(debug_img, f"Other({ox},{oy})", (ox + 8, oy),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+        for (tx, ty) in get_teammate_minimap_positions(screen, win):
+            cv2.drawMarker(debug_img, (tx, ty), (0, 140, 255), markerType=cv2.MARKER_TILTED_CROSS,
+                            markerSize=12, thickness=2)
+            cv2.putText(debug_img, f"Teammate({tx},{ty})", (tx + 8, ty),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 140, 255), 1)
 
     player_x, player_y = player_target_pos
     h, w = debug_img.shape[:2]
@@ -1592,6 +1607,7 @@ if __name__ == "__main__":
                     healer_x_dead_zone=cfg.healer_x_dead_zone,
                     layers=cfg.layers,
                     ropes=cfg.ropes,
+                    show_other_players=cfg.detect_other_players,
                 )
                 if cfg.debug_show_window:
                     show_debug_window(debug_img)
@@ -1621,13 +1637,18 @@ if __name__ == "__main__":
                         if cfg.detect_other_players:
                             other_positions = get_other_player_minimap_positions(game_img, win)
                             teammate_positions = get_teammate_minimap_positions(game_img, win)
+                            if other_positions or teammate_positions:
+                                # 診斷用: 印出實際偵測到的色點座標與換算後的所在平台,
+                                # 用來排查是不是小地圖上的固定 UI 元素被誤認成其他玩家/隊友
+                                print(f"[跨平台爬繩模組] 偵測到色點 - 其他玩家:{other_positions} "
+                                      f"隊友:{teammate_positions}")
                             occupied_layers = find_occupied_layers(
                                 other_positions + teammate_positions, cfg.layers
                             )
                             target_occupied = target_layer_index in occupied_layers
 
                         if target_occupied:
-                            print(f"[跨平台爬繩模組] 目標圖層 {target_layer_index} 偵測到其他玩家/隊友,暫緩換層")
+                            print(f"[跨平台爬繩模組] 目標平台 {target_layer_index} 偵測到其他玩家/隊友,暫緩換層")
                         else:
                             direction = "up" if current_layer.index == rope.lower_layer else "down"
                             keyup_all()
