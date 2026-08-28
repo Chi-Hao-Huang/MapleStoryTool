@@ -1642,6 +1642,9 @@ if __name__ == "__main__":
                                 # 用來排查是不是小地圖上的固定 UI 元素被誤認成其他玩家/隊友
                                 print(f"[跨平台爬繩模組] 偵測到色點 - 其他玩家:{other_positions} "
                                       f"隊友:{teammate_positions}")
+                                cfg.debug = True
+                                
+                                
                             occupied_layers = find_occupied_layers(
                                 other_positions + teammate_positions, cfg.layers
                             )
