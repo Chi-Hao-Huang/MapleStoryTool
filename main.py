@@ -645,10 +645,11 @@ def get_other_player_minimap_positions(game_img, win):
     minimap_crop = crop_region(game_img, minimap_region, win)
     bgr = cv2.cvtColor(minimap_crop, cv2.COLOR_BGRA2BGR)
 
-    # 對應 RGB(238, 0, 0) -> HSV 值;紅色在色環頭尾都算紅,故補一段靠近 179 的範圍
-    lower_red = np.array([0, 100, 100])
-    upper_red = np.array([6, 255, 255])
-    lower_red2 = np.array([174, 100, 100])
+    # 對應 RGB(238, 0, 0) -> HSV 值;色點顏色固定不太會變,故縮小 hue 範圍、拉高飽和度/亮度下限,
+    # 避免誤判到其他偏紅但沒那麼飽和/明亮的畫面元素。紅色在色環頭尾都算紅,故補一段靠近 179 的範圍。
+    lower_red = np.array([0, 180, 180])
+    upper_red = np.array([3, 255, 255])
+    lower_red2 = np.array([177, 180, 180])
     upper_red2 = np.array([180, 255, 255])
 
     rel_positions = find_colored_dots_on_minimap(bgr, lower_red, upper_red, lower_red2, upper_red2)
@@ -668,9 +669,10 @@ def get_teammate_minimap_positions(game_img, win):
     minimap_crop = crop_region(game_img, minimap_region, win)
     bgr = cv2.cvtColor(minimap_crop, cv2.COLOR_BGRA2BGR)
 
-    # 對應 RGB(255, 119, 0) -> HSV 值
-    lower_orange = np.array([10, 150, 150])
-    upper_orange = np.array([18, 255, 255])
+    # 對應 RGB(255, 119, 0) -> HSV 值;色點顏色固定不太會變,故縮小 hue 範圍、拉高飽和度/亮度下限,
+    # 避免誤判到其他偏橘但沒那麼飽和/明亮的畫面元素
+    lower_orange = np.array([12, 180, 180])
+    upper_orange = np.array([16, 255, 255])
 
     rel_positions = find_colored_dots_on_minimap(bgr, lower_orange, upper_orange)
 
@@ -1642,9 +1644,7 @@ if __name__ == "__main__":
                                 # 用來排查是不是小地圖上的固定 UI 元素被誤認成其他玩家/隊友
                                 print(f"[跨平台爬繩模組] 偵測到色點 - 其他玩家:{other_positions} "
                                       f"隊友:{teammate_positions}")
-                                # 只存一張當下畫面的截圖做診斷,不動 cfg.debug(那會讓主迴圈之後
-                                # 每個 tick 都卡在除錯分支、不再移動攻擊)。用 tick_count 讓每次
-                                # 誤判都存成不同檔名,不會互相覆蓋掉。
+                                # 存一張當下畫面的截圖做診斷
                                 snapshot_img = build_debug_image(
                                     win,
                                     game_img,
