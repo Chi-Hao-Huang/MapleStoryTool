@@ -131,19 +131,9 @@ class BotConfig:
 
     # ---- 其他玩家 / 隊友偵測 (換平台前避讓用) ----
     # 目標圖層小地圖上若偵測到其他玩家或隊友的色點,本次就放棄換到那一層,留在原地繼續巡邏。
+    # 色點的 HSV 顏色範圍是遊戲固定顯示色 (#EE0000 / #FF7700),不會隨地圖或帳號改變,
+    # 因此比照小地圖自己黃點 (find_player_on_minimap) 的作法寫死在對應函式內,不放進這裡設定。
     detect_other_players: bool = True
-    dot_min_area: int = 1
-    dot_max_area: int = 25
-
-    # 其他玩家色點 #EE0000 (紅) 對應的 HSV 範圍;紅色在色環頭尾都算紅,故補一段靠近 179 的範圍
-    other_player_hsv_lower: Tuple[int, int, int] = (0, 100, 100)
-    other_player_hsv_upper: Tuple[int, int, int] = (6, 255, 255)
-    other_player_hsv_lower2: Tuple[int, int, int] = (174, 100, 100)
-    other_player_hsv_upper2: Tuple[int, int, int] = (180, 255, 255)
-
-    # 隊友色點 #FF7700 (橘) 對應的 HSV 範圍
-    teammate_hsv_lower: Tuple[int, int, int] = (10, 150, 150)
-    teammate_hsv_upper: Tuple[int, int, int] = (18, 255, 255)
 
 
 # ---------------------------------------------------------
@@ -638,17 +628,44 @@ def find_colored_dots_on_minimap(minimap_crop_bgr, lower_hsv, upper_hsv,
     return positions
 
 
-def get_minimap_positions_by_color(game_img, win, lower_hsv, upper_hsv,
-                                    lower_hsv2=None, upper_hsv2=None,
-                                    min_area=1, max_area=25):
-    """回傳小地圖上符合顏色範圍的所有點的絕對座標 (相對視窗左上) 列表"""
+def get_other_player_minimap_positions(game_img, win):
+    """
+    回傳小地圖上其他玩家的絕對座標 (相對視窗左上) 列表。
+    其他玩家的色點固定顯示為 #EE0000 (紅),是遊戲寫死的顏色、不會隨地圖或帳號改變,
+    比照 find_player_on_minimap 對自己黃點的作法,直接寫死在這裡不放進 BotConfig。
+    """
     minimap_region = get_minimap_region(win)
     minimap_crop = crop_region(game_img, minimap_region, win)
     bgr = cv2.cvtColor(minimap_crop, cv2.COLOR_BGRA2BGR)
 
-    rel_positions = find_colored_dots_on_minimap(
-        bgr, lower_hsv, upper_hsv, lower_hsv2, upper_hsv2, min_area, max_area
-    )
+    # 對應 RGB(238, 0, 0) -> HSV 值;紅色在色環頭尾都算紅,故補一段靠近 179 的範圍
+    lower_red = np.array([0, 100, 100])
+    upper_red = np.array([6, 255, 255])
+    lower_red2 = np.array([174, 100, 100])
+    upper_red2 = np.array([180, 255, 255])
+
+    rel_positions = find_colored_dots_on_minimap(bgr, lower_red, upper_red, lower_red2, upper_red2)
+
+    mm_x1 = minimap_region["left"] - win.left
+    mm_y1 = minimap_region["top"] - win.top
+    return [(mm_x1 + x, mm_y1 + y) for (x, y) in rel_positions]
+
+
+def get_teammate_minimap_positions(game_img, win):
+    """
+    回傳小地圖上隊友的絕對座標 (相對視窗左上) 列表。
+    隊友的色點固定顯示為 #FF7700 (橘),是遊戲寫死的顏色、不會隨地圖或帳號改變,
+    比照 find_player_on_minimap 對自己黃點的作法,直接寫死在這裡不放進 BotConfig。
+    """
+    minimap_region = get_minimap_region(win)
+    minimap_crop = crop_region(game_img, minimap_region, win)
+    bgr = cv2.cvtColor(minimap_crop, cv2.COLOR_BGRA2BGR)
+
+    # 對應 RGB(255, 119, 0) -> HSV 值
+    lower_orange = np.array([10, 150, 150])
+    upper_orange = np.array([18, 255, 255])
+
+    rel_positions = find_colored_dots_on_minimap(bgr, lower_orange, upper_orange)
 
     mm_x1 = minimap_region["left"] - win.left
     mm_y1 = minimap_region["top"] - win.top
@@ -1586,15 +1603,8 @@ if __name__ == "__main__":
 
                         target_occupied = False
                         if cfg.detect_other_players:
-                            other_positions = get_minimap_positions_by_color(
-                                game_img, win, cfg.other_player_hsv_lower, cfg.other_player_hsv_upper,
-                                lower_hsv2=cfg.other_player_hsv_lower2, upper_hsv2=cfg.other_player_hsv_upper2,
-                                min_area=cfg.dot_min_area, max_area=cfg.dot_max_area
-                            )
-                            teammate_positions = get_minimap_positions_by_color(
-                                game_img, win, cfg.teammate_hsv_lower, cfg.teammate_hsv_upper,
-                                min_area=cfg.dot_min_area, max_area=cfg.dot_max_area
-                            )
+                            other_positions = get_other_player_minimap_positions(game_img, win)
+                            teammate_positions = get_teammate_minimap_positions(game_img, win)
                             occupied_layers = find_occupied_layers(
                                 other_positions + teammate_positions, cfg.layers
                             )
