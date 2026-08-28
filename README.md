@@ -48,7 +48,7 @@
 10. **跨平台爬繩模組 (Rope Traverser)**
     - 由於主畫面座標會隨鏡頭捲動而改變，此模組改用小地圖上的色點（不受鏡頭影響）來判斷角色所在位置。但 `LayerConfig`/`RopeConfig` 存的座標**不是**小地圖裁切區域內部的相對值（0~150 / 0~100 那個範圍），而是 `get_minimap_player_abs_pos` 已經把小地圖在視窗內的偏移量加回去、換算出來的**遊戲視窗絕對像素座標**——跟 `debug_game_screen.png`（或任何一張完整遊戲視窗截圖）裡的像素座標是同一個座標系。校正時直接把截圖丟進圖片檢視器、點選小地圖上的色點讀出像素座標填入即可，不需要額外扣掉小地圖本身的位移量。
     - 用 `LayerConfig` 定義地圖有哪些平台：Y 座標範圍 + 該層專屬的左右巡邏邊界；用 `RopeConfig` 定義每條繩索的 X 座標，以及它連接的上/下層 index。兩者集中設定在 `BotConfig.layers` / `BotConfig.ropes`。
-    - `RopeTraverser` 狀態機負責跨多個 tick 執行「左右對齊繩索 X 座標 (`align`) → 抓繩 (`grab`) → 按住 `climb_up_key` 往上爬 / 按住 `drop_down_key` 再點 `drop_jump_key` 直接掉落到下層 (`climb`) → 偵測小地圖 Y 座標進入目標層範圍即完成」，完成前主迴圈的一般巡邏與攻擊判斷會暫時讓位給它。
+    - `RopeTraverser` 狀態機負責跨多個 tick 執行「左右對齊繩索 X 座標 (`align`) → 抓繩 (`grab`) → 按住 `climb_up_key` 往上爬 / 按住 `drop_down_key` 再點 `drop_jump_key` 直接掉落到下層 (`climb`)」，完成前主迴圈的一般巡邏與攻擊判斷會暫時讓位給它。往上爬完成的判斷用的是 `climbing_pose_template` 比對，連續 `climb_pose_lost_confirm_ticks` 次都偵測不到爬繩姿勢才視為爬完，而不是單看小地圖 Y 座標——小地圖太小，Y 範圍常常在角色實際到達平台前就先進入判定範圍，導致提前放開爬繩鍵卡在繩索中途；只有在沒有畫面可比對時才會退回用 Y 座標當備援判斷。
     - **抓繩動作優化**：對齊繩索 X 座標後，往上爬預設不會直接站著按 `climb_up_key`，而是先用「方向鍵 + 跳躍鍵 (`drop_jump_key`)」斜向跳起再按住爬繩鍵，比原地站著按爬繩鍵更容易真的咬到繩子；此行為由 `use_jump_to_grab_rope` 控制，容忍度、跳躍持續時間與重試次數分別對應 `grab_x_tolerance` / `grab_hold_seconds` / `grab_retry_interval` / `grab_max_retries`。
     - **爬繩姿勢範本確認**：新增 `is_player_climbing`，用一張「角色爬繩姿勢」範本圖 (`climbing_pose_template`，預設 `image/climbing_pose.png`) 在玩家座標附近比對，確認角色是否真的抓到繩子在爬，而不是單憑「已經按下爬繩鍵」就假設一定成功；`grab` 階段沒偵測到爬繩姿勢就會依 `grab_retry_interval` 自動重跳。
     - 主迴圈依目前所在平台計算該層的巡邏邊界，並在角色小地圖 X 座標接近某條繩索時（`rope_x_tolerance`）觸發爬繩/掉落，藉此讓角色依序走遍地圖上所有已設定的平台並持續打怪；`min_seconds_between_climbs` 避免剛完成動作又立刻折返、`post_transition_cooldown` 讓爬繩/掉落動畫播完再恢復巡邏判斷、`climb_timeout_seconds` 則是卡住時的逾時保護。

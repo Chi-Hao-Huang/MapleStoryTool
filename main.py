@@ -131,10 +131,14 @@ class BotConfig:
     grab_retry_interval: float = 0.6    # 還沒偵測到爬繩姿勢時,每隔多久重新嘗試跳一次抓繩
     grab_max_retries: int = 3           # 抓繩最多重試幾次,超過就放棄這次爬繩,交還一般巡邏判斷
 
-    # 爬繩姿勢範本比對: 用來確認「真的已經抓到繩子在爬」,比單靠小地圖 Y 座標推測更準
+    # 爬繩姿勢範本比對: 用來確認「真的已經抓到繩子在爬」,也用來判斷「是否已經爬完」,
+    # 比單靠小地圖 Y 座標推測更準(小地圖太小,Y 範圍很容易在角色實際到達平台前就先進入判定範圍)。
     climbing_pose_template: str = 'image/climbing_pose.png'
     climbing_pose_threshold: float = 0.7
     climbing_pose_search_margin: int = 60
+    # 連續幾次都偵測不到爬繩姿勢,才視為「真的已經離開繩索」,避免單一 tick 誤判(例如動畫瞬間、
+    # 角色被畫面其他元素稍微遮擋)就提前放開爬繩鍵,導致卡在繩索中途。
+    climb_pose_lost_confirm_ticks: int = 2
 
     # 同一層至少要巡邏(觸碰邊界折返)幾次,才允許嘗試爬繩換到下一層,
     # 一趟「從左邊界走到右邊界」算 1 次折返,一個來回(左->右->左)則是 2 次。
@@ -769,7 +773,9 @@ class RopeTraverser:
       比站在原地直接按爬繩鍵更容易真的抓到(咬繩子有機率咬不到,斜跳能多涵蓋一點橫向距離)。
       每隔 grab_retry_interval 秒用 climbing_pose_template 比對確認是否已經抓到繩子,
       沒抓到就再跳一次,重試達 grab_max_retries 次仍失敗就放棄這次爬繩。
-    - "climb": 已確認在爬繩(或掉落已觸發),持續按著爬繩鍵直到 Y 座標進入目標層範圍。
+    - "climb": 已確認在爬繩(或掉落已觸發),持續按著爬繩鍵,直到連續
+      climb_pose_lost_confirm_ticks 次都偵測不到爬繩姿勢才視為爬完(而不是用小地圖 Y 座標推測——
+      小地圖太小,Y 範圍常常在角色實際到達平台前就先進入判定範圍,導致提前放開爬繩鍵卡在半路)。
       往下掉落是瞬間動作,對齊後按一次即完成,不會經過 grab 階段。
     """
 
@@ -783,6 +789,7 @@ class RopeTraverser:
         self.start_time: float = 0.0
         self.grab_attempts: int = 0
         self.last_grab_attempt_time: float = 0.0
+        self.pose_lost_streak: int = 0   # "climb" 階段連續幾次沒偵測到爬繩姿勢
         self.last_transition_time: float = 0.0
         self.last_rope_x: Optional[int] = None
 
@@ -804,6 +811,7 @@ class RopeTraverser:
         self.jump_dir = None
         self.start_time = time.time()
         self.grab_attempts = 0
+        self.pose_lost_streak = 0
 
     def _finish(self, reason=""):
         keyup_all(('left', 'right', self.cfg.climb_up_key, self.cfg.drop_down_key))
@@ -895,12 +903,29 @@ class RopeTraverser:
                 self._finish("掉落動作已觸發")
                 return True
 
-            target_layer_index = self.rope.upper_layer
-            target_layer = next((layer for layer in layers if layer.index == target_layer_index), None)
-            if target_layer is not None and \
-                    target_layer.y_min - self.cfg.layer_reach_tolerance <= abs_mm_y \
-                    <= target_layer.y_max + self.cfg.layer_reach_tolerance:
-                self._finish("已到達目標層")
+            # 用「是否還在爬繩姿勢」來判斷有沒有爬完,而不是單靠小地圖 Y 座標推測 ——
+            # 小地圖太小,Y 範圍常常在角色實際到達平台前就先進入判定範圍,導致提前放開爬繩鍵、
+            # 卡在繩索中途。連續 climb_pose_lost_confirm_ticks 次都偵測不到才視為真的爬完,
+            # 避免單一 tick 的誤判(動畫過場、短暫遮擋)就提前結束。
+            if player_screen_gray is not None:
+                still_climbing = is_player_climbing(
+                    player_screen_gray, player_pos,
+                    self.cfg.climbing_pose_template, self.cfg.climbing_pose_threshold,
+                    self.cfg.climbing_pose_search_margin
+                )
+                if still_climbing:
+                    self.pose_lost_streak = 0
+                else:
+                    self.pose_lost_streak += 1
+                    if self.pose_lost_streak >= self.cfg.climb_pose_lost_confirm_ticks:
+                        self._finish("已不再偵測到爬繩姿勢,視為已離開繩索")
+            else:
+                # 沒有畫面可比對姿勢時,退回用小地圖 Y 座標當備援判斷
+                target_layer = next((layer for layer in layers if layer.index == self.rope.upper_layer), None)
+                if target_layer is not None and \
+                        target_layer.y_min - self.cfg.layer_reach_tolerance <= abs_mm_y \
+                        <= target_layer.y_max + self.cfg.layer_reach_tolerance:
+                    self._finish("已到達目標層(備援判斷)")
             return True
 
         return False
@@ -1016,7 +1041,6 @@ def build_debug_image(win, screen, template_path='image/mo_00065.png', threshold
                         (rope.x + 4, (ry1 + ry2) // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 1)
 
     # 其他玩家 / 隊友偵測校正輔助: 把實際偵測到的色點畫出來,方便排查誤判
-    # (例如小地圖上剛好有 UI 元素、圖示顏色跟 #EE0000/#FF7700 太接近而被誤認)
     if show_other_players:
         for (ox, oy) in get_other_player_minimap_positions(screen, win):
             cv2.drawMarker(debug_img, (ox, oy), (0, 0, 255), markerType=cv2.MARKER_TILTED_CROSS,
@@ -1097,7 +1121,7 @@ def save_debug_image(debug_img, path="debug_game_screen.png"):
 
 
 def build_debug_image_from_cfg(win, game_img, player_target_pos, cfg: BotConfig):
-    """build_debug_image 的固定參數都取自 win/game_img/cfg,呼叫端只需要再給 player_target_pos"""
+    """build_debug_image 的固定參數都取自 win/game_img/cfg"""
     return build_debug_image(
         win,
         game_img,
@@ -1116,7 +1140,7 @@ def build_debug_image_from_cfg(win, game_img, player_target_pos, cfg: BotConfig)
 
 
 def save_debug_snapshot(win, game_img, player_target_pos, cfg: BotConfig, path):
-    """組好除錯畫面並直接存檔,呼叫端只需要給檔名"""
+    """組好除錯畫面並直接存檔"""
     save_debug_image(build_debug_image_from_cfg(win, game_img, player_target_pos, cfg), path=path)
 
 
@@ -1151,8 +1175,7 @@ class ReconnectConfig:
     debug_click_screenshots: bool = False
 
     # ---- Chrome 視窗內的點擊比例 (相對視窗寬高,不是相對整個桌面!) ----
-    # 這些比例是依照使用者提供的截圖估算,實機第一次使用建議搭配
-    # debug_click_screenshots=True 校正一次。
+    # 每台電腦情況可能不同，第一次使用建議搭配 debug_click_screenshots=True 校正一次
     launch_game_btn_ratio: Tuple[float, float] = (0.93, 0.68)
     gamapass_btn_ratio: Tuple[float, float] = (0.50, 0.54)
     account_entry_ratio: Tuple[float, float] = (0.50, 0.39)
@@ -1470,13 +1493,13 @@ if __name__ == "__main__":
 
     cfg.layers = [
         # index=0: 最下層平台
-        LayerConfig(index=0, y_min=169, y_max=174, left_bound=40, right_bound=110),
+        LayerConfig(index=0, y_min=168, y_max=173, left_bound=40, right_bound=110),
     
         # index=1: 中間層平台
-        LayerConfig(index=1, y_min=151, y_max=155, left_bound=55, right_bound=77),
+        LayerConfig(index=1, y_min=150, y_max=154, left_bound=55, right_bound=77),
     
         # index=2: 上層平台
-        LayerConfig(index=2, y_min=128, y_max=132, left_bound=47, right_bound=77),
+        LayerConfig(index=2, y_min=127, y_max=131, left_bound=47, right_bound=77),
     
     ]
     
@@ -1648,13 +1671,16 @@ if __name__ == "__main__":
                             other_positions = get_other_player_minimap_positions(game_img, win)
                             teammate_positions = get_teammate_minimap_positions(game_img, win)
                             if other_positions or teammate_positions:
+                                
+                                
                                 # 診斷用: 印出實際偵測到的色點座標與換算後的所在平台,
-                                # 用來排查是不是小地圖上的固定 UI 元素被誤認成其他玩家/隊友
                                 print(f"[跨平台爬繩模組] 偵測到色點 - 其他玩家:{other_positions} "
                                       f"隊友:{teammate_positions}")
                                 # 存一張當下畫面的截圖做診斷
                                 save_debug_snapshot(win, game_img, player_target_pos, cfg,
-                                                     path=f"debug_other_player_{tick_count}.png")
+                                                     path=f"debug_game_screen_{tick_count}.png")
+
+
 
                             occupied_layers = find_occupied_layers(
                                 other_positions + teammate_positions, cfg.layers
