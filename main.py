@@ -645,8 +645,7 @@ def get_other_player_minimap_positions(game_img, win):
     minimap_crop = crop_region(game_img, minimap_region, win)
     bgr = cv2.cvtColor(minimap_crop, cv2.COLOR_BGRA2BGR)
 
-    # 對應 RGB(238, 0, 0) -> HSV 值;色點顏色固定不太會變,故縮小 hue 範圍、拉高飽和度/亮度下限,
-    # 避免誤判到其他偏紅但沒那麼飽和/明亮的畫面元素。紅色在色環頭尾都算紅,故補一段靠近 179 的範圍。
+    # 紅色在色環頭尾都算紅,故補一段靠近 179 的範圍。
     lower_red = np.array([0, 180, 180])
     upper_red = np.array([3, 255, 255])
     lower_red2 = np.array([177, 180, 180])
@@ -669,8 +668,7 @@ def get_teammate_minimap_positions(game_img, win):
     minimap_crop = crop_region(game_img, minimap_region, win)
     bgr = cv2.cvtColor(minimap_crop, cv2.COLOR_BGRA2BGR)
 
-    # 對應 RGB(255, 119, 0) -> HSV 值;色點顏色固定不太會變,故縮小 hue 範圍、拉高飽和度/亮度下限,
-    # 避免誤判到其他偏橘但沒那麼飽和/明亮的畫面元素
+    # 對應 RGB(255, 119, 0) -> HSV 值
     lower_orange = np.array([12, 180, 180])
     upper_orange = np.array([16, 255, 255])
 
@@ -1096,6 +1094,30 @@ def show_debug_window(debug_img, window_name="Bot Debug View"):
 def save_debug_image(debug_img, path="debug_game_screen.png"):
     cv2.imwrite(path, debug_img)
     print(f"{path} saved.")
+
+
+def build_debug_image_from_cfg(win, game_img, player_target_pos, cfg: BotConfig):
+    """build_debug_image 的固定參數都取自 win/game_img/cfg,呼叫端只需要再給 player_target_pos"""
+    return build_debug_image(
+        win,
+        game_img,
+        attack_radius=cfg.attack_distance_threshold,
+        template_path=cfg.template_paths,
+        threshold=cfg.monsters_threshold,
+        player_target_pos=player_target_pos,
+        healer_tag_path=cfg.healer_tag_path,
+        healer_threshold=cfg.healer_tag_threshold,
+        healer_y_tolerance=cfg.healer_y_tolerance,
+        healer_x_dead_zone=cfg.healer_x_dead_zone,
+        layers=cfg.layers,
+        ropes=cfg.ropes,
+        show_other_players=cfg.detect_other_players,
+    )
+
+
+def save_debug_snapshot(win, game_img, player_target_pos, cfg: BotConfig, path):
+    """組好除錯畫面並直接存檔,呼叫端只需要給檔名"""
+    save_debug_image(build_debug_image_from_cfg(win, game_img, player_target_pos, cfg), path=path)
 
 
 # ---------------------------------------------------------
@@ -1596,21 +1618,7 @@ if __name__ == "__main__":
                     cfg.minimap_left_bound = 40
 
             if cfg.debug:
-                debug_img = build_debug_image(
-                    win,
-                    game_img,
-                    attack_radius=cfg.attack_distance_threshold,
-                    template_path=cfg.template_paths,
-                    threshold=cfg.monsters_threshold,
-                    player_target_pos=player_target_pos,
-                    healer_tag_path=cfg.healer_tag_path,
-                    healer_threshold=cfg.healer_tag_threshold,
-                    healer_y_tolerance=cfg.healer_y_tolerance,
-                    healer_x_dead_zone=cfg.healer_x_dead_zone,
-                    layers=cfg.layers,
-                    ropes=cfg.ropes,
-                    show_other_players=cfg.detect_other_players,
-                )
+                debug_img = build_debug_image_from_cfg(win, game_img, player_target_pos, cfg)
                 if cfg.debug_show_window:
                     show_debug_window(debug_img)
                 if cfg.debug_save_image:
@@ -1645,22 +1653,8 @@ if __name__ == "__main__":
                                 print(f"[跨平台爬繩模組] 偵測到色點 - 其他玩家:{other_positions} "
                                       f"隊友:{teammate_positions}")
                                 # 存一張當下畫面的截圖做診斷
-                                snapshot_img = build_debug_image(
-                                    win,
-                                    game_img,
-                                    attack_radius=cfg.attack_distance_threshold,
-                                    template_path=cfg.template_paths,
-                                    threshold=cfg.monsters_threshold,
-                                    player_target_pos=player_target_pos,
-                                    healer_tag_path=cfg.healer_tag_path,
-                                    healer_threshold=cfg.healer_tag_threshold,
-                                    healer_y_tolerance=cfg.healer_y_tolerance,
-                                    healer_x_dead_zone=cfg.healer_x_dead_zone,
-                                    layers=cfg.layers,
-                                    ropes=cfg.ropes,
-                                    show_other_players=True,
-                                )
-                                save_debug_image(snapshot_img, path=f"debug_other_player_{tick_count}.png")
+                                save_debug_snapshot(win, game_img, player_target_pos, cfg,
+                                                     path=f"debug_other_player_{tick_count}.png")
 
                             occupied_layers = find_occupied_layers(
                                 other_positions + teammate_positions, cfg.layers
