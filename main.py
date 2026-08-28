@@ -132,17 +132,15 @@ class BotConfig:
     grab_max_retries: int = 3           # 抓繩最多重試幾次,超過就放棄這次爬繩,交還一般巡邏判斷
 
     # 爬繩姿勢範本比對: 用來確認「真的已經抓到繩子在爬」,也用來判斷「是否已經爬完」,
-    # 比單靠小地圖 Y 座標推測更準(小地圖太小,Y 範圍很容易在角色實際到達平台前就先進入判定範圍)。
     climbing_pose_template: str = 'image/climbing_pose.png'
     climbing_pose_threshold: float = 0.7
     climbing_pose_search_margin: int = 60
-    # 連續幾次都偵測不到爬繩姿勢,才視為「真的已經離開繩索」,避免單一 tick 誤判(例如動畫瞬間、
-    # 角色被畫面其他元素稍微遮擋)就提前放開爬繩鍵,導致卡在繩索中途。
+    # 連續幾次都偵測不到爬繩姿勢,才視為「真的已經離開繩索」,避免單一 tick 誤判
     climb_pose_lost_confirm_ticks: int = 2
 
     # 同一層至少要巡邏(觸碰邊界折返)幾次,才允許嘗試爬繩換到下一層,
     # 一趟「從左邊界走到右邊界」算 1 次折返,一個來回(左->右->左)則是 2 次。
-    min_patrol_bounces_before_climb: int = 1
+    min_patrol_bounces_before_climb: int = 2
 
     # ---- 其他玩家 / 隊友偵測 (換平台前避讓用) ----
     # 目標平台小地圖上若偵測到其他玩家或隊友的色點,本次就放棄換到那一層,留在原地繼續巡邏。
@@ -1671,16 +1669,7 @@ if __name__ == "__main__":
                             other_positions = get_other_player_minimap_positions(game_img, win)
                             teammate_positions = get_teammate_minimap_positions(game_img, win)
                             if other_positions or teammate_positions:
-                                
-                                
-                                # 診斷用: 印出實際偵測到的色點座標與換算後的所在平台,
-                                print(f"[跨平台爬繩模組] 偵測到色點 - 其他玩家:{other_positions} "
-                                      f"隊友:{teammate_positions}")
-                                # 存一張當下畫面的截圖做診斷
-                                save_debug_snapshot(win, game_img, player_target_pos, cfg,
-                                                     path=f"debug_game_screen_{tick_count}.png")
-
-
+                                print(f"[跨平台爬繩模組] 偵測位置 - 其他玩家:{other_positions}, 隊友:{teammate_positions}")
 
                             occupied_layers = find_occupied_layers(
                                 other_positions + teammate_positions, cfg.layers
