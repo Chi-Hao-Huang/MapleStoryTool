@@ -25,8 +25,14 @@ import subprocess
 
 @dataclass
 class LayerConfig:
-    """平台圖層設定:小地圖 Y 座標落在 [y_min, y_max] 視為在這一層,
-    並套用這一層專屬的左右巡邏邊界。index 只是圖層代號,供 RopeConfig 參照連接關係用。"""
+    """
+    平台設定:Y 座標落在 [y_min, y_max] 視為在這一層,並套用這一層專屬的左右巡邏邊界。
+    index 只是平台代號,供 RopeConfig 參照連接關係用。
+
+    這裡的座標是透過小地圖上的色點換算出來的「遊戲視窗絕對像素座標」,
+    和 debug_game_screen.png(或任何一張完整遊戲視窗截圖)裡的像素座標是同一個座標系,
+    可以直接用圖片檢視器在截圖上點選色點讀出像素座標填入,不需要另外換算小地圖裁切區域內部的相對值。
+    """
     index: int
     y_min: int
     y_max: int
@@ -36,8 +42,12 @@ class LayerConfig:
 
 @dataclass
 class RopeConfig:
-    """繩索設定:小地圖上的 X 座標,以及這條繩索連接的下層/上層 index
-    (對應 LayerConfig.index)。座標皆以小地圖(不受角色移動/畫面捲動影響)為準。"""
+    """
+    繩索設定:連接的下層/上層 index(對應 LayerConfig.index),以及繩索所在的 X 座標。
+
+    X 座標同樣是「遊戲視窗絕對像素座標」(見 LayerConfig 說明),不是小地圖裁切區域內部的相對值,
+    也不受角色移動/畫面捲動影響(因為是從小地圖上的色點換算而來,小地圖本身固定不動)。
+    """
     x: int
     lower_layer: int
     upper_layer: int
@@ -73,33 +83,36 @@ class BotConfig:
     aoe_attack_key: str = 'a'
     aoe_monster_count: int = 2  # 範圍內達到幾隻怪就改用範圍攻擊
 
-    # 補師跟隨模組
+    # ---- 效能相關設定 ----
+    # 每隔多少個 tick 重新搶一次遊戲視窗焦點 (0 = 只在啟動時搶一次,之後不再搶)
+    reactivate_interval_ticks: int = 1
+    
+    # 角色/補師標籤的局部搜尋半徑。上次有偵測到位置時,只在該位置附近搜尋,找不到才退回全螢幕搜尋
+    player_search_margin: int = 150
+    healer_search_margin: int = 200
+    
+    # ---- debug ----
+    debug: bool = False
+    debug_show_window: bool = False   # debug 時是否即時顯示監看視窗
+    debug_save_image: bool = True   # debug 時是否額外存成檔案
+    
+
+    # ---- 補師跟隨模組 ----
     enable_healer_follow: bool = False   # 關閉時完全不搜尋補師、視為找不到補師,退回一般邊界巡邏
     healer_tag_path: str = 'image/healer_tag.png'
     healer_tag_threshold: float = 0.6
     healer_y_tolerance: int = 100   # Y座標差在此範圍內視為同一層
     healer_x_dead_zone: int = 100   # X座標差在此範圍內視為已到達補師旁邊,不再移動
 
-    debug: bool = False
-    debug_show_window: bool = False   # debug 時是否即時顯示監看視窗
-    debug_save_image: bool = True   # debug 時是否額外存成檔案
-
-    # ---- 效能相關設定 ----
-    # 每隔多少個 tick 重新搶一次遊戲視窗焦點 (0 = 只在啟動時搶一次,之後不再搶)
-    reactivate_interval_ticks: int = 1
-    # 角色/補師標籤的局部搜尋半徑(像素)。上次有偵測到位置時,只在該位置附近搜尋,
-    # 找不到才退回全螢幕搜尋,可大幅降低 matchTemplate 的運算量。
-    player_search_margin: int = 150
-    healer_search_margin: int = 200
-
-    # 斷線重連是否啟用
+    # ---- 斷線重連模組 ---- 
     enable_reconnect: bool = True
 
     # ---- 跨平台爬繩模組 ----
-    # 定義地圖有哪些平台圖層(小地圖 Y 座標範圍 + 該層左右巡邏邊界)。
+    # 定義地圖有哪些平台(遊戲視窗絕對像素座標的 Y 範圍 + 該層左右巡邏邊界,見 LayerConfig 說明)。
     # 保持空清單則完全不啟用跨層爬繩,行為退回原本單層 minimap_left_bound/right_bound 巡邏。
     layers: List[LayerConfig] = field(default_factory=list)
-    # 定義小地圖上每一條繩索的 X 座標,以及它連接的上下兩層 index(需對應 layers 裡的 index)。
+    # 定義每一條繩索的 X 座標(同樣是遊戲視窗絕對像素座標,見 RopeConfig 說明),
+    # 以及它連接的上下兩層 index(需對應 layers 裡的 index)。
     ropes: List[RopeConfig] = field(default_factory=list)
 
     climb_up_key: str = 'up'
@@ -112,39 +125,26 @@ class BotConfig:
     min_seconds_between_climbs: float = 4.0   # 同一條繩索避免立刻來回爬,兩次使用間至少間隔幾秒
     post_transition_cooldown: float = 1.5     # 完成爬繩/掉落後,暫停幾秒讓動作播放完畢再重新判斷巡邏
 
-    # ---- 抓繩動作優化: 用「方向鍵 + 跳躍鍵」斜跳去咬繩,比原地站著按爬繩鍵更容易抓到 ----
     use_jump_to_grab_rope: bool = True
     grab_x_tolerance: int = 10          # 改用斜跳抓繩時,允許比 rope_x_tolerance 更寬鬆的對齊容忍度
     grab_hold_seconds: float = 0.15     # 起跳瞬間持續按住方向鍵的時間,製造橫向位移去咬繩
     grab_retry_interval: float = 0.6    # 還沒偵測到爬繩姿勢時,每隔多久重新嘗試跳一次抓繩
     grab_max_retries: int = 3           # 抓繩最多重試幾次,超過就放棄這次爬繩,交還一般巡邏判斷
 
-    # 爬繩姿勢範本比對: 用來確認「真的已經抓到繩子在爬」,比單靠小地圖 Y 座標推測更準
+    # 爬繩姿勢範本比對: 用來確認「真的已經抓到繩子在爬」,也用來判斷「是否已經爬完」,
     climbing_pose_template: str = 'image/climbing_pose.png'
     climbing_pose_threshold: float = 0.7
     climbing_pose_search_margin: int = 60
+    # 連續幾次都偵測不到爬繩姿勢,才視為「真的已經離開繩索」,避免單一 tick 誤判
+    climb_pose_lost_confirm_ticks: int = 2
 
     # 同一層至少要巡邏(觸碰邊界折返)幾次,才允許嘗試爬繩換到下一層,
-    # 避免角色一靠近繩索附近就馬上換平台、同一層打不到幾隻怪。
     # 一趟「從左邊界走到右邊界」算 1 次折返,一個來回(左->右->左)則是 2 次。
     min_patrol_bounces_before_climb: int = 2
 
     # ---- 其他玩家 / 隊友偵測 (換平台前避讓用) ----
-    # 目標圖層小地圖上若偵測到其他玩家或隊友的色點,本次就放棄換到那一層,留在原地繼續巡邏。
+    # 目標平台小地圖上若偵測到其他玩家或隊友的色點,本次就放棄換到那一層,留在原地繼續巡邏。
     detect_other_players: bool = True
-    dot_min_area: int = 1
-    dot_max_area: int = 25
-
-    # 其他玩家色點 #EE0000 (紅) 對應的 HSV 範圍;紅色在色環頭尾都算紅,故補一段靠近 179 的範圍
-    other_player_hsv_lower: Tuple[int, int, int] = (0, 100, 100)
-    other_player_hsv_upper: Tuple[int, int, int] = (6, 255, 255)
-    other_player_hsv_lower2: Tuple[int, int, int] = (174, 100, 100)
-    other_player_hsv_upper2: Tuple[int, int, int] = (180, 255, 255)
-
-    # 隊友色點 #FF7700 (橘) 對應的 HSV 範圍
-    teammate_hsv_lower: Tuple[int, int, int] = (10, 150, 150)
-    teammate_hsv_upper: Tuple[int, int, int] = (18, 255, 255)
-
 
 # ---------------------------------------------------------
 # tool
@@ -163,7 +163,6 @@ def activate_window(win):
         ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
     ctypes.windll.user32.ShowWindow(hwnd, 5)
     ctypes.windll.user32.SetForegroundWindow(hwnd)
- 
 
 
 def get_window(title_exact=None, title_contains=None, activate=False):
@@ -638,17 +637,44 @@ def find_colored_dots_on_minimap(minimap_crop_bgr, lower_hsv, upper_hsv,
     return positions
 
 
-def get_minimap_positions_by_color(game_img, win, lower_hsv, upper_hsv,
-                                    lower_hsv2=None, upper_hsv2=None,
-                                    min_area=1, max_area=25):
-    """回傳小地圖上符合顏色範圍的所有點的絕對座標 (相對視窗左上) 列表"""
+def get_other_player_minimap_positions(game_img, win):
+    """
+    回傳小地圖上其他玩家的絕對座標 (相對視窗左上) 列表。
+    其他玩家的色點固定顯示為 #EE0000 (紅),是遊戲寫死的顏色、不會隨地圖或帳號改變,
+    比照 find_player_on_minimap 對自己黃點的作法,直接寫死在這裡不放進 BotConfig。
+    """
     minimap_region = get_minimap_region(win)
     minimap_crop = crop_region(game_img, minimap_region, win)
     bgr = cv2.cvtColor(minimap_crop, cv2.COLOR_BGRA2BGR)
 
-    rel_positions = find_colored_dots_on_minimap(
-        bgr, lower_hsv, upper_hsv, lower_hsv2, upper_hsv2, min_area, max_area
-    )
+    # 紅色在色環頭尾都算紅,故補一段靠近 179 的範圍。
+    lower_red = np.array([0, 180, 180])
+    upper_red = np.array([3, 255, 255])
+    lower_red2 = np.array([177, 180, 180])
+    upper_red2 = np.array([180, 255, 255])
+
+    rel_positions = find_colored_dots_on_minimap(bgr, lower_red, upper_red, lower_red2, upper_red2)
+
+    mm_x1 = minimap_region["left"] - win.left
+    mm_y1 = minimap_region["top"] - win.top
+    return [(mm_x1 + x, mm_y1 + y) for (x, y) in rel_positions]
+
+
+def get_teammate_minimap_positions(game_img, win):
+    """
+    回傳小地圖上隊友的絕對座標 (相對視窗左上) 列表。
+    隊友的色點固定顯示為 #FF7700 (橘),是遊戲寫死的顏色、不會隨地圖或帳號改變,
+    比照 find_player_on_minimap 對自己黃點的作法,直接寫死在這裡不放進 BotConfig。
+    """
+    minimap_region = get_minimap_region(win)
+    minimap_crop = crop_region(game_img, minimap_region, win)
+    bgr = cv2.cvtColor(minimap_crop, cv2.COLOR_BGRA2BGR)
+
+    # 對應 RGB(255, 119, 0) -> HSV 值
+    lower_orange = np.array([12, 180, 180])
+    upper_orange = np.array([16, 255, 255])
+
+    rel_positions = find_colored_dots_on_minimap(bgr, lower_orange, upper_orange)
 
     mm_x1 = minimap_region["left"] - win.left
     mm_y1 = minimap_region["top"] - win.top
@@ -656,7 +682,7 @@ def get_minimap_positions_by_color(game_img, win, lower_hsv, upper_hsv,
 
 
 def find_occupied_layers(positions, layers: List['LayerConfig']):
-    """依 Y 座標把每個點對應到所在圖層,回傳有出現點的圖層 index 集合"""
+    """依 Y 座標把每個點對應到所在平台,回傳有出現點的平台 index 集合"""
     occupied = set()
     for _, y in positions:
         layer = find_layer_by_y(y, layers)
@@ -691,8 +717,8 @@ def decide_move_target(player_pos, healer_pos, abs_mm_x, current_direction, cfg:
       改成朝補師的 X 座標靠攏。已經在容忍範圍內就回傳 None (代表停止移動)。
     - 否則維持原本邊界折返邏輯 (decide_move_direction)。
 
-    left_bound/right_bound: 可傳入目前所在圖層(LayerConfig)的邊界,取代 cfg 裡的預設值,
-    供跨平台爬繩模組依「目前圖層」而非全域單一邊界做巡邏判斷。
+    left_bound/right_bound: 可傳入目前所在平台(LayerConfig)的邊界,取代 cfg 裡的預設值,
+    供跨平台爬繩模組依「目前平台」而非全域單一邊界做巡邏判斷。
 
     回傳值: "left" / "right" / None (None 代表這次不移動)
     """
@@ -715,7 +741,7 @@ def decide_move_target(player_pos, healer_pos, abs_mm_x, current_direction, cfg:
 
 
 def find_layer_by_y(abs_mm_y, layers: List[LayerConfig]) -> Optional[LayerConfig]:
-    """依小地圖 Y 座標找出目前所在的平台圖層,找不到回傳 None"""
+    """依 Y 座標(遊戲視窗絕對像素座標,見 LayerConfig 說明)找出目前所在的平台,找不到回傳 None"""
     for layer in layers:
         if layer.y_min <= abs_mm_y <= layer.y_max:
             return layer
@@ -723,7 +749,8 @@ def find_layer_by_y(abs_mm_y, layers: List[LayerConfig]) -> Optional[LayerConfig
 
 
 def find_rope_near_x(abs_mm_x, layer_index, ropes: List[RopeConfig], tolerance) -> Optional[RopeConfig]:
-    """在目前圖層中,找出小地圖 X 座標落在容忍範圍內、且與這一層相連(上層或下層皆可)的繩索"""
+    """在目前平台中,找出 X 座標(遊戲視窗絕對像素座標,見 RopeConfig 說明)落在容忍範圍內、
+    且與這一層相連(上層或下層皆可)的繩索"""
     for rope in ropes:
         if layer_index not in (rope.lower_layer, rope.upper_layer):
             continue
@@ -738,13 +765,15 @@ class RopeTraverser:
 
     一旦呼叫 start() 啟動,接下來每個 tick 都改由 step() 接管移動判斷,依序經過:
 
-    - "align": 左右移動,對齊繩索的小地圖 X 座標。
+    - "align": 左右移動,對齊繩索的 X 座標(遊戲視窗絕對像素座標,見 RopeConfig 說明)。
     - "grab" (只有往上爬、且 cfg.use_jump_to_grab_rope 開啟時才會經過):
       對齊後改用「方向鍵 + 跳躍鍵」斜向跳起、同時按住爬繩鍵去咬繩,
       比站在原地直接按爬繩鍵更容易真的抓到(咬繩子有機率咬不到,斜跳能多涵蓋一點橫向距離)。
       每隔 grab_retry_interval 秒用 climbing_pose_template 比對確認是否已經抓到繩子,
       沒抓到就再跳一次,重試達 grab_max_retries 次仍失敗就放棄這次爬繩。
-    - "climb": 已確認在爬繩(或掉落已觸發),持續按著爬繩鍵直到小地圖 Y 座標進入目標層範圍。
+    - "climb": 已確認在爬繩(或掉落已觸發),持續按著爬繩鍵,直到連續
+      climb_pose_lost_confirm_ticks 次都偵測不到爬繩姿勢才視為爬完(而不是用小地圖 Y 座標推測——
+      小地圖太小,Y 範圍常常在角色實際到達平台前就先進入判定範圍,導致提前放開爬繩鍵卡在半路)。
       往下掉落是瞬間動作,對齊後按一次即完成,不會經過 grab 階段。
     """
 
@@ -752,12 +781,13 @@ class RopeTraverser:
         self.cfg = cfg
         self.active = False
         self.rope: Optional[RopeConfig] = None
-        self.direction: Optional[str] = None   # "up" 或 "down"
+        self.direction: Optional[str] = None    # "up" 或 "down"
         self.phase: Optional[str] = None        # "align" / "grab" / "climb"
         self.jump_dir: Optional[str] = None     # 抓繩起跳時使用的方向鍵
         self.start_time: float = 0.0
         self.grab_attempts: int = 0
         self.last_grab_attempt_time: float = 0.0
+        self.pose_lost_streak: int = 0   # "climb" 階段連續幾次沒偵測到爬繩姿勢
         self.last_transition_time: float = 0.0
         self.last_rope_x: Optional[int] = None
 
@@ -771,7 +801,7 @@ class RopeTraverser:
     def start(self, rope: RopeConfig, direction: str):
         action_label = "爬繩上樓" if direction == "up" else "掉落下樓"
         print(f"[跨平台爬繩模組] 開始{action_label} (繩索 X={rope.x}, "
-              f"圖層 {rope.lower_layer} <-> {rope.upper_layer})")
+              f"平台 {rope.lower_layer} <-> {rope.upper_layer})")
         self.active = True
         self.rope = rope
         self.direction = direction
@@ -779,6 +809,7 @@ class RopeTraverser:
         self.jump_dir = None
         self.start_time = time.time()
         self.grab_attempts = 0
+        self.pose_lost_streak = 0
 
     def _finish(self, reason=""):
         keyup_all(('left', 'right', self.cfg.climb_up_key, self.cfg.drop_down_key))
@@ -866,16 +897,33 @@ class RopeTraverser:
 
         if self.phase == "climb":
             if self.direction == "down":
-                # 掉落是瞬間動作,放開下鍵後就視為完成,由下個 tick 重新判斷所在圖層
+                # 掉落是瞬間動作,放開下鍵後就視為完成,由下個 tick 重新判斷所在平台
                 self._finish("掉落動作已觸發")
                 return True
 
-            target_layer_index = self.rope.upper_layer
-            target_layer = next((layer for layer in layers if layer.index == target_layer_index), None)
-            if target_layer is not None and \
-                    target_layer.y_min - self.cfg.layer_reach_tolerance <= abs_mm_y \
-                    <= target_layer.y_max + self.cfg.layer_reach_tolerance:
-                self._finish("已到達目標層")
+            # 用「是否還在爬繩姿勢」來判斷有沒有爬完,而不是單靠小地圖 Y 座標推測 ——
+            # 小地圖太小,Y 範圍常常在角色實際到達平台前就先進入判定範圍,導致提前放開爬繩鍵、
+            # 卡在繩索中途。連續 climb_pose_lost_confirm_ticks 次都偵測不到才視為真的爬完,
+            # 避免單一 tick 的誤判(動畫過場、短暫遮擋)就提前結束。
+            if player_screen_gray is not None:
+                still_climbing = is_player_climbing(
+                    player_screen_gray, player_pos,
+                    self.cfg.climbing_pose_template, self.cfg.climbing_pose_threshold,
+                    self.cfg.climbing_pose_search_margin
+                )
+                if still_climbing:
+                    self.pose_lost_streak = 0
+                else:
+                    self.pose_lost_streak += 1
+                    if self.pose_lost_streak >= self.cfg.climb_pose_lost_confirm_ticks:
+                        self._finish("已不再偵測到爬繩姿勢,視為已離開繩索")
+            else:
+                # 沒有畫面可比對姿勢時,退回用小地圖 Y 座標當備援判斷
+                target_layer = next((layer for layer in layers if layer.index == self.rope.upper_layer), None)
+                if target_layer is not None and \
+                        target_layer.y_min - self.cfg.layer_reach_tolerance <= abs_mm_y \
+                        <= target_layer.y_max + self.cfg.layer_reach_tolerance:
+                    self._finish("已到達目標層(備援判斷)")
             return True
 
         return False
@@ -883,8 +931,8 @@ class RopeTraverser:
 
 class PatrolLapTracker:
     """
-    追蹤角色在目前圖層已經來回巡邏(觸碰邊界折返)幾次。
-    換到新圖層時自動歸零重算,達到 cfg.min_patrol_bounces_before_climb 之前不允許嘗試爬繩換層,
+    追蹤角色在目前平台已經來回巡邏(觸碰邊界折返)幾次。
+    換到新平台時自動歸零重算,達到 cfg.min_patrol_bounces_before_climb 之前不允許嘗試爬繩換層,
     避免角色一靠近繩索附近就馬上換平台、同一層還沒打幾隻怪就走了。
     """
 
@@ -925,9 +973,10 @@ def build_debug_image(win, screen, template_path='image/mo_00065.png', threshold
                        healer_tag_path=None, healer_threshold=0.55,
                        healer_y_tolerance=30, healer_x_dead_zone=15,
                        layers: Optional[List['LayerConfig']] = None,
-                       ropes: Optional[List['RopeConfig']] = None):
+                       ropes: Optional[List['RopeConfig']] = None,
+                       show_other_players: bool = False):
     """
-    根據傳入的 screen(已經截好的 BGRA 畫面) 繪製除錯圖層,回傳 debug_img。
+    根據傳入的 screen(已經截好的 BGRA 畫面) 繪製除錯用的標記與疊圖,回傳 debug_img。
     debug 模式著重可讀性而非效能,因此這裡仍用全螢幕搜尋,不套用 ROI 加速。
     """
     hp_region, mp_region = get_hp_mp_region(win)
@@ -965,21 +1014,42 @@ def build_debug_image(win, screen, template_path='image/mo_00065.png', threshold
         cv2.putText(debug_img, "Minimap Player: NOT FOUND",
                     (mm_x2 + 10, mm_y1 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
-    # 跨平台爬繩模組校正輔助:在小地圖 ROI 上畫出每層的 Y 範圍與每條繩索的 X 座標
+    # 跨平台爬繩模組校正輔助: layers/ropes 座標本來就是遊戲視窗絕對像素座標,
+    # 直接疊在整張截圖上畫,不能再加小地圖裁切偏移量(mm_x1/mm_y1),
+    # 這樣才能直接對照畫面裡實際的平台/繩索位置來校正數值。
+    layer_y_ranges = {}
     if layers:
         for layer in layers:
-            ly1 = mm_y1 + layer.y_min
-            ly2 = mm_y1 + layer.y_max
-            cv2.rectangle(debug_img, (mm_x1, ly1), (mm_x2, ly2), (0, 255, 0), 1)
-            cv2.putText(debug_img, f"L{layer.index}", (mm_x2 + 5, (ly1 + ly2) // 2),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+            cv2.rectangle(debug_img, (layer.left_bound, layer.y_min),
+                          (layer.right_bound, layer.y_max), (0, 255, 0), 1)
+            cv2.putText(debug_img, f"L{layer.index}", (layer.left_bound, layer.y_min - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            layer_y_ranges[layer.index] = (layer.y_min, layer.y_max)
 
     if ropes:
+        img_h = debug_img.shape[0]
         for rope in ropes:
-            rx = mm_x1 + rope.x
-            cv2.line(debug_img, (rx, mm_y1), (rx, mm_y2), (0, 0, 255), 1)
+            lower_range = layer_y_ranges.get(rope.lower_layer)
+            upper_range = layer_y_ranges.get(rope.upper_layer)
+            # 兩端平台都有設定時,只畫兩層之間的那一段;缺一邊就整條貫穿畫面方便排查設定問題
+            ry1 = lower_range[0] if lower_range else 0
+            ry2 = upper_range[1] if upper_range else img_h
+            cv2.line(debug_img, (rope.x, ry1), (rope.x, ry2), (0, 0, 255), 1)
             cv2.putText(debug_img, f"{rope.lower_layer}<->{rope.upper_layer}",
-                        (max(mm_x1, rx - 12), mm_y2 + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+                        (rope.x + 4, (ry1 + ry2) // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 1)
+
+    # 其他玩家 / 隊友偵測校正輔助: 把實際偵測到的色點畫出來,方便排查誤判
+    if show_other_players:
+        for (ox, oy) in get_other_player_minimap_positions(screen, win):
+            cv2.drawMarker(debug_img, (ox, oy), (0, 0, 255), markerType=cv2.MARKER_TILTED_CROSS,
+                            markerSize=12, thickness=2)
+            cv2.putText(debug_img, f"Other({ox},{oy})", (ox + 8, oy),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+        for (tx, ty) in get_teammate_minimap_positions(screen, win):
+            cv2.drawMarker(debug_img, (tx, ty), (0, 140, 255), markerType=cv2.MARKER_TILTED_CROSS,
+                            markerSize=12, thickness=2)
+            cv2.putText(debug_img, f"Teammate({tx},{ty})", (tx + 8, ty),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 140, 255), 1)
 
     player_x, player_y = player_target_pos
     h, w = debug_img.shape[:2]
@@ -1048,6 +1118,30 @@ def save_debug_image(debug_img, path="debug_game_screen.png"):
     print(f"{path} saved.")
 
 
+def build_debug_image_from_cfg(win, game_img, player_target_pos, cfg: BotConfig):
+    """build_debug_image 的固定參數都取自 win/game_img/cfg"""
+    return build_debug_image(
+        win,
+        game_img,
+        attack_radius=cfg.attack_distance_threshold,
+        template_path=cfg.template_paths,
+        threshold=cfg.monsters_threshold,
+        player_target_pos=player_target_pos,
+        healer_tag_path=cfg.healer_tag_path,
+        healer_threshold=cfg.healer_tag_threshold,
+        healer_y_tolerance=cfg.healer_y_tolerance,
+        healer_x_dead_zone=cfg.healer_x_dead_zone,
+        layers=cfg.layers,
+        ropes=cfg.ropes,
+        show_other_players=cfg.detect_other_players,
+    )
+
+
+def save_debug_snapshot(win, game_img, player_target_pos, cfg: BotConfig, path):
+    """組好除錯畫面並直接存檔"""
+    save_debug_image(build_debug_image_from_cfg(win, game_img, player_target_pos, cfg), path=path)
+
+
 # ---------------------------------------------------------
 # 斷線重連模組
 # ---------------------------------------------------------
@@ -1079,8 +1173,7 @@ class ReconnectConfig:
     debug_click_screenshots: bool = False
 
     # ---- Chrome 視窗內的點擊比例 (相對視窗寬高,不是相對整個桌面!) ----
-    # 這些比例是依照使用者提供的截圖估算,實機第一次使用建議搭配
-    # debug_click_screenshots=True 校正一次。
+    # 每台電腦情況可能不同，第一次使用建議搭配 debug_click_screenshots=True 校正一次
     launch_game_btn_ratio: Tuple[float, float] = (0.93, 0.68)
     gamapass_btn_ratio: Tuple[float, float] = (0.50, 0.54)
     account_entry_ratio: Tuple[float, float] = (0.50, 0.39)
@@ -1398,13 +1491,13 @@ if __name__ == "__main__":
 
     cfg.layers = [
         # index=0: 最下層平台
-        LayerConfig(index=0, y_min=169, y_max=174, left_bound=40, right_bound=110),
+        LayerConfig(index=0, y_min=168, y_max=173, left_bound=40, right_bound=110),
     
         # index=1: 中間層平台
-        LayerConfig(index=1, y_min=151, y_max=155, left_bound=55, right_bound=77),
+        LayerConfig(index=1, y_min=150, y_max=154, left_bound=55, right_bound=77),
     
         # index=2: 上層平台
-        LayerConfig(index=2, y_min=128, y_max=132, left_bound=47, right_bound=77),
+        LayerConfig(index=2, y_min=127, y_max=131, left_bound=47, right_bound=77),
     
     ]
     
@@ -1546,20 +1639,7 @@ if __name__ == "__main__":
                     cfg.minimap_left_bound = 40
 
             if cfg.debug:
-                debug_img = build_debug_image(
-                    win,
-                    game_img,
-                    attack_radius=cfg.attack_distance_threshold,
-                    template_path=cfg.template_paths,
-                    threshold=cfg.monsters_threshold,
-                    player_target_pos=player_target_pos,
-                    healer_tag_path=cfg.healer_tag_path,
-                    healer_threshold=cfg.healer_tag_threshold,
-                    healer_y_tolerance=cfg.healer_y_tolerance,
-                    healer_x_dead_zone=cfg.healer_x_dead_zone,
-                    layers=cfg.layers,
-                    ropes=cfg.ropes,
-                )
+                debug_img = build_debug_image_from_cfg(win, game_img, player_target_pos, cfg)
                 if cfg.debug_show_window:
                     show_debug_window(debug_img)
                 if cfg.debug_save_image:
@@ -1586,22 +1666,18 @@ if __name__ == "__main__":
 
                         target_occupied = False
                         if cfg.detect_other_players:
-                            other_positions = get_minimap_positions_by_color(
-                                game_img, win, cfg.other_player_hsv_lower, cfg.other_player_hsv_upper,
-                                lower_hsv2=cfg.other_player_hsv_lower2, upper_hsv2=cfg.other_player_hsv_upper2,
-                                min_area=cfg.dot_min_area, max_area=cfg.dot_max_area
-                            )
-                            teammate_positions = get_minimap_positions_by_color(
-                                game_img, win, cfg.teammate_hsv_lower, cfg.teammate_hsv_upper,
-                                min_area=cfg.dot_min_area, max_area=cfg.dot_max_area
-                            )
+                            other_positions = get_other_player_minimap_positions(game_img, win)
+                            teammate_positions = get_teammate_minimap_positions(game_img, win)
+                            if other_positions or teammate_positions:
+                                print(f"[跨平台爬繩模組] 偵測位置 - 其他玩家:{other_positions}, 隊友:{teammate_positions}")
+
                             occupied_layers = find_occupied_layers(
                                 other_positions + teammate_positions, cfg.layers
                             )
                             target_occupied = target_layer_index in occupied_layers
 
                         if target_occupied:
-                            print(f"[跨平台爬繩模組] 目標圖層 {target_layer_index} 偵測到其他玩家/隊友,暫緩換層")
+                            print(f"[跨平台爬繩模組] 目標平台 {target_layer_index} 偵測到其他玩家/隊友,暫緩換層")
                         else:
                             direction = "up" if current_layer.index == rope.lower_layer else "down"
                             keyup_all()
