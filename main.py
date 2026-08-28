@@ -25,8 +25,14 @@ import subprocess
 
 @dataclass
 class LayerConfig:
-    """平台圖層設定:小地圖 Y 座標落在 [y_min, y_max] 視為在這一層,
-    並套用這一層專屬的左右巡邏邊界。index 只是圖層代號,供 RopeConfig 參照連接關係用。"""
+    """
+    平台圖層設定:Y 座標落在 [y_min, y_max] 視為在這一層,並套用這一層專屬的左右巡邏邊界。
+    index 只是圖層代號,供 RopeConfig 參照連接關係用。
+
+    這裡的座標是透過小地圖上的色點換算出來的「遊戲視窗絕對像素座標」,
+    和 debug_game_screen.png(或任何一張完整遊戲視窗截圖)裡的像素座標是同一個座標系,
+    可以直接用圖片檢視器在截圖上點選色點讀出像素座標填入,不需要另外換算小地圖裁切區域內部的相對值。
+    """
     index: int
     y_min: int
     y_max: int
@@ -36,8 +42,12 @@ class LayerConfig:
 
 @dataclass
 class RopeConfig:
-    """繩索設定:小地圖上的 X 座標,以及這條繩索連接的下層/上層 index
-    (對應 LayerConfig.index)。座標皆以小地圖(不受角色移動/畫面捲動影響)為準。"""
+    """
+    繩索設定:連接的下層/上層 index(對應 LayerConfig.index),以及繩索所在的 X 座標。
+
+    X 座標同樣是「遊戲視窗絕對像素座標」(見 LayerConfig 說明),不是小地圖裁切區域內部的相對值,
+    也不受角色移動/畫面捲動影響(因為是從小地圖上的色點換算而來,小地圖本身固定不動)。
+    """
     x: int
     lower_layer: int
     upper_layer: int
@@ -73,33 +83,36 @@ class BotConfig:
     aoe_attack_key: str = 'a'
     aoe_monster_count: int = 2  # 範圍內達到幾隻怪就改用範圍攻擊
 
-    # 補師跟隨模組
+    # ---- 效能相關設定 ----
+    # 每隔多少個 tick 重新搶一次遊戲視窗焦點 (0 = 只在啟動時搶一次,之後不再搶)
+    reactivate_interval_ticks: int = 1
+    
+    # 角色/補師標籤的局部搜尋半徑。上次有偵測到位置時,只在該位置附近搜尋,找不到才退回全螢幕搜尋
+    player_search_margin: int = 150
+    healer_search_margin: int = 200
+    
+    # ---- debug ----
+    debug: bool = True
+    debug_show_window: bool = False   # debug 時是否即時顯示監看視窗
+    debug_save_image: bool = True   # debug 時是否額外存成檔案
+    
+
+    # ---- 補師跟隨模組 ----
     enable_healer_follow: bool = False   # 關閉時完全不搜尋補師、視為找不到補師,退回一般邊界巡邏
     healer_tag_path: str = 'image/healer_tag.png'
     healer_tag_threshold: float = 0.6
     healer_y_tolerance: int = 100   # Y座標差在此範圍內視為同一層
     healer_x_dead_zone: int = 100   # X座標差在此範圍內視為已到達補師旁邊,不再移動
 
-    debug: bool = False
-    debug_show_window: bool = False   # debug 時是否即時顯示監看視窗
-    debug_save_image: bool = True   # debug 時是否額外存成檔案
-
-    # ---- 效能相關設定 ----
-    # 每隔多少個 tick 重新搶一次遊戲視窗焦點 (0 = 只在啟動時搶一次,之後不再搶)
-    reactivate_interval_ticks: int = 1
-    # 角色/補師標籤的局部搜尋半徑(像素)。上次有偵測到位置時,只在該位置附近搜尋,
-    # 找不到才退回全螢幕搜尋,可大幅降低 matchTemplate 的運算量。
-    player_search_margin: int = 150
-    healer_search_margin: int = 200
-
-    # 斷線重連是否啟用
+    # ---- 斷線重連模組 ---- 
     enable_reconnect: bool = True
 
     # ---- 跨平台爬繩模組 ----
-    # 定義地圖有哪些平台圖層(小地圖 Y 座標範圍 + 該層左右巡邏邊界)。
+    # 定義地圖有哪些平台圖層(遊戲視窗絕對像素座標的 Y 範圍 + 該層左右巡邏邊界,見 LayerConfig 說明)。
     # 保持空清單則完全不啟用跨層爬繩,行為退回原本單層 minimap_left_bound/right_bound 巡邏。
     layers: List[LayerConfig] = field(default_factory=list)
-    # 定義小地圖上每一條繩索的 X 座標,以及它連接的上下兩層 index(需對應 layers 裡的 index)。
+    # 定義每一條繩索的 X 座標(同樣是遊戲視窗絕對像素座標,見 RopeConfig 說明),
+    # 以及它連接的上下兩層 index(需對應 layers 裡的 index)。
     ropes: List[RopeConfig] = field(default_factory=list)
 
     climb_up_key: str = 'up'
@@ -112,7 +125,6 @@ class BotConfig:
     min_seconds_between_climbs: float = 4.0   # 同一條繩索避免立刻來回爬,兩次使用間至少間隔幾秒
     post_transition_cooldown: float = 1.5     # 完成爬繩/掉落後,暫停幾秒讓動作播放完畢再重新判斷巡邏
 
-    # ---- 抓繩動作優化: 用「方向鍵 + 跳躍鍵」斜跳去咬繩,比原地站著按爬繩鍵更容易抓到 ----
     use_jump_to_grab_rope: bool = True
     grab_x_tolerance: int = 10          # 改用斜跳抓繩時,允許比 rope_x_tolerance 更寬鬆的對齊容忍度
     grab_hold_seconds: float = 0.15     # 起跳瞬間持續按住方向鍵的時間,製造橫向位移去咬繩
@@ -125,16 +137,12 @@ class BotConfig:
     climbing_pose_search_margin: int = 60
 
     # 同一層至少要巡邏(觸碰邊界折返)幾次,才允許嘗試爬繩換到下一層,
-    # 避免角色一靠近繩索附近就馬上換平台、同一層打不到幾隻怪。
     # 一趟「從左邊界走到右邊界」算 1 次折返,一個來回(左->右->左)則是 2 次。
     min_patrol_bounces_before_climb: int = 1
 
     # ---- 其他玩家 / 隊友偵測 (換平台前避讓用) ----
     # 目標圖層小地圖上若偵測到其他玩家或隊友的色點,本次就放棄換到那一層,留在原地繼續巡邏。
-    # 色點的 HSV 顏色範圍是遊戲固定顯示色 (#EE0000 / #FF7700),不會隨地圖或帳號改變,
-    # 因此比照小地圖自己黃點 (find_player_on_minimap) 的作法寫死在對應函式內,不放進這裡設定。
     detect_other_players: bool = True
-
 
 # ---------------------------------------------------------
 # tool
@@ -153,7 +161,6 @@ def activate_window(win):
         ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
     ctypes.windll.user32.ShowWindow(hwnd, 5)
     ctypes.windll.user32.SetForegroundWindow(hwnd)
- 
 
 
 def get_window(title_exact=None, title_contains=None, activate=False):
@@ -732,7 +739,7 @@ def decide_move_target(player_pos, healer_pos, abs_mm_x, current_direction, cfg:
 
 
 def find_layer_by_y(abs_mm_y, layers: List[LayerConfig]) -> Optional[LayerConfig]:
-    """依小地圖 Y 座標找出目前所在的平台圖層,找不到回傳 None"""
+    """依 Y 座標(遊戲視窗絕對像素座標,見 LayerConfig 說明)找出目前所在的平台圖層,找不到回傳 None"""
     for layer in layers:
         if layer.y_min <= abs_mm_y <= layer.y_max:
             return layer
@@ -740,7 +747,8 @@ def find_layer_by_y(abs_mm_y, layers: List[LayerConfig]) -> Optional[LayerConfig
 
 
 def find_rope_near_x(abs_mm_x, layer_index, ropes: List[RopeConfig], tolerance) -> Optional[RopeConfig]:
-    """在目前圖層中,找出小地圖 X 座標落在容忍範圍內、且與這一層相連(上層或下層皆可)的繩索"""
+    """在目前圖層中,找出 X 座標(遊戲視窗絕對像素座標,見 RopeConfig 說明)落在容忍範圍內、
+    且與這一層相連(上層或下層皆可)的繩索"""
     for rope in ropes:
         if layer_index not in (rope.lower_layer, rope.upper_layer):
             continue
@@ -755,13 +763,13 @@ class RopeTraverser:
 
     一旦呼叫 start() 啟動,接下來每個 tick 都改由 step() 接管移動判斷,依序經過:
 
-    - "align": 左右移動,對齊繩索的小地圖 X 座標。
+    - "align": 左右移動,對齊繩索的 X 座標(遊戲視窗絕對像素座標,見 RopeConfig 說明)。
     - "grab" (只有往上爬、且 cfg.use_jump_to_grab_rope 開啟時才會經過):
       對齊後改用「方向鍵 + 跳躍鍵」斜向跳起、同時按住爬繩鍵去咬繩,
       比站在原地直接按爬繩鍵更容易真的抓到(咬繩子有機率咬不到,斜跳能多涵蓋一點橫向距離)。
       每隔 grab_retry_interval 秒用 climbing_pose_template 比對確認是否已經抓到繩子,
       沒抓到就再跳一次,重試達 grab_max_retries 次仍失敗就放棄這次爬繩。
-    - "climb": 已確認在爬繩(或掉落已觸發),持續按著爬繩鍵直到小地圖 Y 座標進入目標層範圍。
+    - "climb": 已確認在爬繩(或掉落已觸發),持續按著爬繩鍵直到 Y 座標進入目標層範圍。
       往下掉落是瞬間動作,對齊後按一次即完成,不會經過 grab 階段。
     """
 
@@ -769,7 +777,7 @@ class RopeTraverser:
         self.cfg = cfg
         self.active = False
         self.rope: Optional[RopeConfig] = None
-        self.direction: Optional[str] = None   # "up" 或 "down"
+        self.direction: Optional[str] = None    # "up" 或 "down"
         self.phase: Optional[str] = None        # "align" / "grab" / "climb"
         self.jump_dir: Optional[str] = None     # 抓繩起跳時使用的方向鍵
         self.start_time: float = 0.0
@@ -982,21 +990,29 @@ def build_debug_image(win, screen, template_path='image/mo_00065.png', threshold
         cv2.putText(debug_img, "Minimap Player: NOT FOUND",
                     (mm_x2 + 10, mm_y1 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
-    # 跨平台爬繩模組校正輔助:在小地圖 ROI 上畫出每層的 Y 範圍與每條繩索的 X 座標
+    # 跨平台爬繩模組校正輔助: layers/ropes 座標本來就是遊戲視窗絕對像素座標,
+    # 直接疊在整張截圖上畫,不能再加小地圖裁切偏移量(mm_x1/mm_y1),
+    # 這樣才能直接對照畫面裡實際的平台/繩索位置來校正數值。
+    layer_y_ranges = {}
     if layers:
         for layer in layers:
-            ly1 = mm_y1 + layer.y_min
-            ly2 = mm_y1 + layer.y_max
-            cv2.rectangle(debug_img, (mm_x1, ly1), (mm_x2, ly2), (0, 255, 0), 1)
-            cv2.putText(debug_img, f"L{layer.index}", (mm_x2 + 5, (ly1 + ly2) // 2),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+            cv2.rectangle(debug_img, (layer.left_bound, layer.y_min),
+                          (layer.right_bound, layer.y_max), (0, 255, 0), 1)
+            cv2.putText(debug_img, f"L{layer.index}", (layer.left_bound, layer.y_min - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            layer_y_ranges[layer.index] = (layer.y_min, layer.y_max)
 
     if ropes:
+        img_h = debug_img.shape[0]
         for rope in ropes:
-            rx = mm_x1 + rope.x
-            cv2.line(debug_img, (rx, mm_y1), (rx, mm_y2), (0, 0, 255), 1)
+            lower_range = layer_y_ranges.get(rope.lower_layer)
+            upper_range = layer_y_ranges.get(rope.upper_layer)
+            # 兩端圖層都有設定時,只畫兩層之間的那一段;缺一邊就整條貫穿畫面方便排查設定問題
+            ry1 = lower_range[0] if lower_range else 0
+            ry2 = upper_range[1] if upper_range else img_h
+            cv2.line(debug_img, (rope.x, ry1), (rope.x, ry2), (0, 0, 255), 1)
             cv2.putText(debug_img, f"{rope.lower_layer}<->{rope.upper_layer}",
-                        (max(mm_x1, rx - 12), mm_y2 + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+                        (rope.x + 4, (ry1 + ry2) // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 1)
 
     player_x, player_y = player_target_pos
     h, w = debug_img.shape[:2]
