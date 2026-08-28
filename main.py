@@ -1642,9 +1642,26 @@ if __name__ == "__main__":
                                 # 用來排查是不是小地圖上的固定 UI 元素被誤認成其他玩家/隊友
                                 print(f"[跨平台爬繩模組] 偵測到色點 - 其他玩家:{other_positions} "
                                       f"隊友:{teammate_positions}")
-                                cfg.debug = True
-                                
-                                
+                                # 只存一張當下畫面的截圖做診斷,不動 cfg.debug(那會讓主迴圈之後
+                                # 每個 tick 都卡在除錯分支、不再移動攻擊)。用 tick_count 讓每次
+                                # 誤判都存成不同檔名,不會互相覆蓋掉。
+                                snapshot_img = build_debug_image(
+                                    win,
+                                    game_img,
+                                    attack_radius=cfg.attack_distance_threshold,
+                                    template_path=cfg.template_paths,
+                                    threshold=cfg.monsters_threshold,
+                                    player_target_pos=player_target_pos,
+                                    healer_tag_path=cfg.healer_tag_path,
+                                    healer_threshold=cfg.healer_tag_threshold,
+                                    healer_y_tolerance=cfg.healer_y_tolerance,
+                                    healer_x_dead_zone=cfg.healer_x_dead_zone,
+                                    layers=cfg.layers,
+                                    ropes=cfg.ropes,
+                                    show_other_players=True,
+                                )
+                                save_debug_image(snapshot_img, path=f"debug_other_player_{tick_count}.png")
+
                             occupied_layers = find_occupied_layers(
                                 other_positions + teammate_positions, cfg.layers
                             )
