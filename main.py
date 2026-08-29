@@ -1298,8 +1298,8 @@ class ReconnectConfig:
     server_select_threshold: float = 0.8
     disconnect_character_template: str = 'image/disconnect_character.png'
     disconnect_character_threshold: float = 0.7
-    # LIE DETECTOR 防外掛檢測視窗:遊戲不定時彈出、需要玩家動滑鼠配合的檢測畫面,
-    # 目前策略是偵測到就直接強制關閉遊戲並走完整重新連線流程,而不是嘗試自動配合檢測。
+    
+    # LIE DETECTOR 防外掛檢測視窗
     lie_detector_template: str = 'image/lie_detector_notice.png'
     lie_detector_threshold: float = 0.7
 
@@ -1722,6 +1722,8 @@ if __name__ == "__main__":
             lie_detector_open = cfg.enable_reconnect and reconnector.is_lie_detector_open(game_img)
             if lie_detector_open:
                 print("[斷線重連模組] 偵測到 LIE DETECTOR 防外掛檢測視窗,強制關閉遊戲並重新連線...")
+                # 診斷用: 存一張當下畫面,方便觀察比對是否正常觸發(player_target_pos 此時可能還沒算出來,先用預設值)
+                save_debug_snapshot(win, game_img, (0, 0), cfg, path=f"debug_lie_detector_{tick_count}.png")
 
             if cfg.enable_reconnect and (lie_detector_open or reconnector.is_disconnected(game_img)):
                 keyup_all()
