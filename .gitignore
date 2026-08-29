@@ -35,6 +35,4 @@ secrets.json
 /debug/
 **/player_tag.png
 **/healer_tag.png
-**/debug_game_screen.png
 *debug_game_screen*
-*debug_other_player*

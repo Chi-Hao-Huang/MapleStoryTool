@@ -90,6 +90,9 @@ class BotConfig:
     # 角色/補師標籤的局部搜尋半徑。上次有偵測到位置時,只在該位置附近搜尋,找不到才退回全螢幕搜尋
     player_search_margin: int = 150
     healer_search_margin: int = 200
+
+    # 連續幾次都偵測不到玩家標籤,視為畫面異常(例如卡在某個對話框、視窗跑掉),強制重啟遊戲流程
+    max_consecutive_player_not_found: int = 10
     
     # ---- debug ----
     debug: bool = False
@@ -948,10 +951,7 @@ class RopeTraverser:
                 self._finish("掉落動作已觸發")
                 return True
 
-            # 用「是否還在爬繩姿勢」來判斷有沒有爬完,而不是單靠小地圖 Y 座標推測 ——
-            # 小地圖太小,Y 範圍常常在角色實際到達平台前就先進入判定範圍,導致提前放開爬繩鍵、
-            # 卡在繩索中途。連續 climb_pose_lost_confirm_ticks 次都偵測不到才視為真的爬完,
-            # 避免單一 tick 的誤判(動畫過場、短暫遮擋)就提前結束。
+            # 用爬繩姿勢來判斷有沒有爬完
             if player_screen_gray is not None:
                 still_climbing = is_player_climbing(
                     player_screen_gray, player_pos,
@@ -1155,9 +1155,6 @@ def build_debug_image(win, screen, template_path='image/mo_00065.png', threshold
         cv2.putText(debug_img, "Minimap Player: NOT FOUND",
                     (mm_x2 + 10, mm_y1 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
-    # 跨平台爬繩模組校正輔助: layers/ropes 座標本來就是遊戲視窗絕對像素座標,
-    # 直接疊在整張截圖上畫,不能再加小地圖裁切偏移量(mm_x1/mm_y1),
-    # 這樣才能直接對照畫面裡實際的平台/繩索位置來校正數值。
     layer_y_ranges = {}
     if layers:
         for layer in layers:
@@ -1298,6 +1295,10 @@ class ReconnectConfig:
     server_select_threshold: float = 0.8
     disconnect_character_template: str = 'image/disconnect_character.png'
     disconnect_character_threshold: float = 0.7
+    
+    # LIE DETECTOR 防外掛檢測視窗
+    lie_detector_template: str = 'image/lie_detector_notice.png'
+    lie_detector_threshold: float = 0.7
 
     # 視窗 / 程序名稱
     game_window_title: str = '新楓之谷'
@@ -1379,6 +1380,20 @@ class ReconnectManager:
             return max_val >= self.rc.disconnect_threshold
         except Exception as e:
             print(f"[斷線重連模組] is_disconnected 發生例外: {e}")
+            return False
+
+    def is_lie_detector_open(self, game_img):
+        """判斷目前遊戲畫面是否顯示 LIE DETECTOR 防外掛檢測視窗(遊戲畫面內的圖案,非獨立跳出的視窗)"""
+        template = _load_tag_template(self.rc.lie_detector_template)
+        if template is None:
+            return False
+        try:
+            game_gray = cv2.cvtColor(game_img, cv2.COLOR_BGRA2GRAY)
+            res = cv2.matchTemplate(game_gray, template, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, _ = cv2.minMaxLoc(res)
+            return max_val >= self.rc.lie_detector_threshold
+        except Exception as e:
+            print(f"[斷線重連模組] is_lie_detector_open 發生例外: {e}")
             return False
 
     def force_close_game(self, max_retries=3, retry_delay=3.0):
@@ -1677,6 +1692,9 @@ if __name__ == "__main__":
     consecutive_reconnect_failures = 0
     max_consecutive_reconnect_failures = 3
 
+    # 連續偵測不到玩家標籤的次數: 超過門檻視為畫面異常,強制重啟遊戲
+    consecutive_player_not_found = 0
+
     # 啟動時搶一次焦點
     win = get_game_window(activate=True)
 
@@ -1699,8 +1717,15 @@ if __name__ == "__main__":
             game_img = np.array(sct.grab(game_region))
             game_img_gray = cv2.cvtColor(game_img, cv2.COLOR_BGRA2GRAY)
 
-            # 斷線檢測模組
-            if cfg.enable_reconnect and reconnector.is_disconnected(game_img):
+            # 斷線檢測模組 (含 LIE DETECTOR 防外掛檢測視窗:偵測到就直接強制關閉遊戲重新連線,
+            # 不嘗試自動配合檢測,避免處理不了而卡在檢測畫面被判定為外掛)
+            lie_detector_open = cfg.enable_reconnect and reconnector.is_lie_detector_open(game_img)
+            if lie_detector_open:
+                print("[斷線重連模組] 偵測到 LIE DETECTOR 防外掛檢測視窗,強制關閉遊戲並重新連線...")
+                # 診斷用: 存一張當下畫面,方便觀察比對是否正常觸發(player_target_pos 此時可能還沒算出來,先用預設值)
+                save_debug_snapshot(win, game_img, (0, 0), cfg, path=f"debug_game_screen_liedector_{tick_count}.png")
+
+            if cfg.enable_reconnect and (lie_detector_open or reconnector.is_disconnected(game_img)):
                 keyup_all()
                 success = reconnector.handle_reconnect()
 
@@ -1743,12 +1768,38 @@ if __name__ == "__main__":
             )
 
             if player_target_pos is None:
-                print("警告: 未偵測到玩家位置，重新判斷")
+                consecutive_player_not_found += 1
+                print(f"警告: 未偵測到玩家位置，重新判斷 (連續 {consecutive_player_not_found} 次)")
+
+                if consecutive_player_not_found >= cfg.max_consecutive_player_not_found:
+                    print(f"[主程式] 連續 {consecutive_player_not_found} 次偵測不到玩家位置,"
+                          f"視為畫面異常,強制重啟遊戲...")
+                    # 診斷用
+                    save_debug_snapshot(win, game_img, (0, 0), cfg, path=f"debug_game_screen_10noplayer_{tick_count}.png")
+                    
+                    keyup_all()
+                    success = reconnector.handle_reconnect()
+
+                    last_player_pos = None
+                    last_healer_pos = None
+                    consecutive_player_not_found = 0
+
+                    if success:
+                        consecutive_reconnect_failures = 0
+                    else:
+                        consecutive_reconnect_failures += 1
+                        if consecutive_reconnect_failures >= max_consecutive_reconnect_failures:
+                            print(f"[主程式] 連續 {consecutive_reconnect_failures} 次重連失敗,"
+                                  f"停止自動重連,請人工檢查狀況！")
+                            break
+                    continue
+
                 keyup_all()
                 pydirectinput.press('alt')
                 time.sleep(cfg.main_loop_sleep)
                 continue
 
+            consecutive_player_not_found = 0
             last_player_pos = player_target_pos
             px, py = player_target_pos
 
@@ -1814,7 +1865,6 @@ if __name__ == "__main__":
                 if current_layer is not None and cooldown_ok and \
                         bounce_count >= cfg.min_patrol_bounces_before_climb:
                     # 用 LayerSweepDirector 決定這次該往上還是往下,讓角色完整掃過所有平台,
-                    # 而不是因為「往下掉落不需要對齊、永遠比往上爬容易觸發」就一直卡在下面幾層。
                     direction = layer_sweep_director.decide(current_layer.index, cfg.ropes)
                     skip_align = (direction == "down")
 
