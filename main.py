@@ -1558,7 +1558,7 @@ class ReconnectManager:
         self._click_ratio(game_win, self.rc.server_name_ratio, "server_name")
         time.sleep(2.0)
 
-        '''
+
         # 展開頻道選單,捲動到最下面
         self._click_ratio(game_win, self.rc.channel_scrollbar_ratio, "scroll_to_bottom")
         time.sleep(2.0)
@@ -1579,7 +1579,7 @@ class ReconnectManager:
         # 點擊頻道 ch.3
         self._click_ratio(game_win, self.rc.channel_area_ratio_ch3, "channel_area")
         time.sleep(2.0)
-
+        '''
 
         # 進入伺服器
         self._click_ratio(game_win, self.rc.channel_enter_ratio, "channel_area")
@@ -1814,7 +1814,6 @@ if __name__ == "__main__":
                 if current_layer is not None and cooldown_ok and \
                         bounce_count >= cfg.min_patrol_bounces_before_climb:
                     # 用 LayerSweepDirector 決定這次該往上還是往下,讓角色完整掃過所有平台,
-                    # 而不是因為「往下掉落不需要對齊、永遠比往上爬容易觸發」就一直卡在下面幾層。
                     direction = layer_sweep_director.decide(current_layer.index, cfg.ropes)
                     skip_align = (direction == "down")
 
