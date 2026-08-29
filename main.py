@@ -92,7 +92,7 @@ class BotConfig:
     healer_search_margin: int = 200
 
     # 連續幾次都偵測不到玩家標籤,視為畫面異常(例如卡在某個對話框、視窗跑掉),強制重啟遊戲流程
-    max_consecutive_player_not_found: int = 20
+    max_consecutive_player_not_found: int = 10
     
     # ---- debug ----
     debug: bool = False
@@ -951,10 +951,7 @@ class RopeTraverser:
                 self._finish("掉落動作已觸發")
                 return True
 
-            # 用「是否還在爬繩姿勢」來判斷有沒有爬完,而不是單靠小地圖 Y 座標推測 ——
-            # 小地圖太小,Y 範圍常常在角色實際到達平台前就先進入判定範圍,導致提前放開爬繩鍵、
-            # 卡在繩索中途。連續 climb_pose_lost_confirm_ticks 次都偵測不到才視為真的爬完,
-            # 避免單一 tick 的誤判(動畫過場、短暫遮擋)就提前結束。
+            # 用爬繩姿勢來判斷有沒有爬完
             if player_screen_gray is not None:
                 still_climbing = is_player_climbing(
                     player_screen_gray, player_pos,
@@ -1158,9 +1155,6 @@ def build_debug_image(win, screen, template_path='image/mo_00065.png', threshold
         cv2.putText(debug_img, "Minimap Player: NOT FOUND",
                     (mm_x2 + 10, mm_y1 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
-    # 跨平台爬繩模組校正輔助: layers/ropes 座標本來就是遊戲視窗絕對像素座標,
-    # 直接疊在整張截圖上畫,不能再加小地圖裁切偏移量(mm_x1/mm_y1),
-    # 這樣才能直接對照畫面裡實際的平台/繩索位置來校正數值。
     layer_y_ranges = {}
     if layers:
         for layer in layers:
@@ -1579,7 +1573,7 @@ class ReconnectManager:
         self._click_ratio(game_win, self.rc.server_name_ratio, "server_name")
         time.sleep(2.0)
 
-
+        '''
         # 展開頻道選單,捲動到最下面
         self._click_ratio(game_win, self.rc.channel_scrollbar_ratio, "scroll_to_bottom")
         time.sleep(2.0)
@@ -1600,7 +1594,7 @@ class ReconnectManager:
         # 點擊頻道 ch.3
         self._click_ratio(game_win, self.rc.channel_area_ratio_ch3, "channel_area")
         time.sleep(2.0)
-        '''
+
 
         # 進入伺服器
         self._click_ratio(game_win, self.rc.channel_enter_ratio, "channel_area")
@@ -1729,7 +1723,7 @@ if __name__ == "__main__":
             if lie_detector_open:
                 print("[斷線重連模組] 偵測到 LIE DETECTOR 防外掛檢測視窗,強制關閉遊戲並重新連線...")
                 # 診斷用: 存一張當下畫面,方便觀察比對是否正常觸發(player_target_pos 此時可能還沒算出來,先用預設值)
-                save_debug_snapshot(win, game_img, (0, 0), cfg, path=f"debug_game_screen_{tick_count}.png")
+                save_debug_snapshot(win, game_img, (0, 0), cfg, path=f"debug_game_screen_liedector_{tick_count}.png")
 
             if cfg.enable_reconnect and (lie_detector_open or reconnector.is_disconnected(game_img)):
                 keyup_all()
@@ -1780,6 +1774,9 @@ if __name__ == "__main__":
                 if consecutive_player_not_found >= cfg.max_consecutive_player_not_found:
                     print(f"[主程式] 連續 {consecutive_player_not_found} 次偵測不到玩家位置,"
                           f"視為畫面異常,強制重啟遊戲...")
+                    # 診斷用
+                    save_debug_snapshot(win, game_img, (0, 0), cfg, path=f"debug_game_screen_10noplayer_{tick_count}.png")
+                    
                     keyup_all()
                     success = reconnector.handle_reconnect()
 
