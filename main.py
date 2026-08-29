@@ -1078,6 +1078,33 @@ class StuckWatchdog:
         return False
 
 
+class LayerSweepDirector:
+    """
+    決定跨平台移動時該往上還是往下,讓角色像電梯一樣完整掃過所有平台
+    (例如 0 -> 1 -> 2 -> 1 -> 0 -> 1 -> 2 -> ...),而不是因為「往下掉落不需要對齊、
+    永遠比往上爬容易觸發」,就一直卡在下面幾層來回移動、永遠上不到最上層。
+
+    邏輯很單純(類似磁碟排程的 SCAN 演算法):目前往哪個方向走(up/down)就盡量繼續往那個方向走,
+    直到那個方向已經沒有平台可以再移動(到頂或到底)才反過來。
+    這假設平台是像樓層一樣「一條線」排列、沒有分岔,符合目前地圖的接法。
+    """
+
+    def __init__(self, initial_direction: str = "up"):
+        self.direction = initial_direction
+
+    def decide(self, current_layer_index: int, ropes: List[RopeConfig]) -> str:
+        """回傳這次應該嘗試的方向("up" 或 "down"),必要時會先反轉掃描方向"""
+        has_up = any(r.lower_layer == current_layer_index for r in ropes)
+        has_down = any(r.upper_layer == current_layer_index for r in ropes)
+
+        if self.direction == "up" and not has_up and has_down:
+            self.direction = "down"
+        elif self.direction == "down" and not has_down and has_up:
+            self.direction = "up"
+
+        return self.direction
+
+
 # ---------------------------------------------------------
 # debug 模組
 # ---------------------------------------------------------
@@ -1606,6 +1633,7 @@ if __name__ == "__main__":
     # 這張地圖的繩索都在平台左側,爬到頂端容易卡在邊緣被怪物撞下去,爬繩時額外持續按右鍵往內側移動
     cfg.climb_drift_key = 'right'
 
+
     cfg.layers = [
         # index=0: 最下層平台
         LayerConfig(index=0, y_min=168, y_max=173, left_bound=40, right_bound=110),
@@ -1628,6 +1656,7 @@ if __name__ == "__main__":
     ]
 
 
+
     # 初始化重連模組
     reconnector = ReconnectManager(rc_cfg)
 
@@ -1637,6 +1666,7 @@ if __name__ == "__main__":
     rope_traverser = RopeTraverser(cfg)
     patrol_lap_tracker = PatrolLapTracker()
     stuck_watchdog = StuckWatchdog(cfg)
+    layer_sweep_director = LayerSweepDirector()
     tick_count = 0
 
     # 上次偵測到的角色/補師位置,用來做局部搜尋加速
@@ -1783,17 +1813,17 @@ if __name__ == "__main__":
 
                 if current_layer is not None and cooldown_ok and \
                         bounce_count >= cfg.min_patrol_bounces_before_climb:
-                    # 往下掉落不需要對齊繩索 X 座標,平台上任何位置都能觸發,優先判斷;
-                    # can_start 的冷卻機制會避免剛從下層爬上來就立刻掉回去,讓角色有機會先往上探索。
-                    rope = find_rope_down_from_layer(current_layer.index, cfg.ropes)
-                    direction = "down"
-                    skip_align = True
+                    # 用 LayerSweepDirector 決定這次該往上還是往下,讓角色完整掃過所有平台,
+                    # 而不是因為「往下掉落不需要對齊、永遠比往上爬容易觸發」就一直卡在下面幾層。
+                    direction = layer_sweep_director.decide(current_layer.index, cfg.ropes)
+                    skip_align = (direction == "down")
 
-                    if rope is None or not rope_traverser.can_start(rope):
-                        # 沒有可掉落的下層、或還在冷卻中 -> 改判斷往上爬(需要對齊繩索 X 座標)
+                    if direction == "down":
+                        # 往下掉落不需要對齊繩索 X 座標,平台上任何位置都能觸發
+                        rope = find_rope_down_from_layer(current_layer.index, cfg.ropes)
+                    else:
+                        # 往上爬需要先對齊繩索的確切 X 座標
                         rope = find_rope_near_x(abs_mm_x, current_layer.index, cfg.ropes, cfg.rope_x_tolerance)
-                        direction = "up"
-                        skip_align = False
                         if rope is not None and rope.lower_layer != current_layer.index:
                             rope = None  # find_rope_near_x 也會配對到下層繩索,這裡只要「往上」的
 
