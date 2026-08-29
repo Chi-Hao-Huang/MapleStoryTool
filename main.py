@@ -1723,7 +1723,7 @@ if __name__ == "__main__":
             if lie_detector_open:
                 print("[斷線重連模組] 偵測到 LIE DETECTOR 防外掛檢測視窗,強制關閉遊戲並重新連線...")
                 # 診斷用: 存一張當下畫面,方便觀察比對是否正常觸發(player_target_pos 此時可能還沒算出來,先用預設值)
-                save_debug_snapshot(win, game_img, (0, 0), cfg, path=f"debug_lie_detector_{tick_count}.png")
+                save_debug_snapshot(win, game_img, (0, 0), cfg, path=f"debug_game_screen_{tick_count}.png")
 
             if cfg.enable_reconnect and (lie_detector_open or reconnector.is_disconnected(game_img)):
                 keyup_all()
