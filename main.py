@@ -90,6 +90,9 @@ class BotConfig:
     # 角色/補師標籤的局部搜尋半徑。上次有偵測到位置時,只在該位置附近搜尋,找不到才退回全螢幕搜尋
     player_search_margin: int = 150
     healer_search_margin: int = 200
+
+    # 連續幾次都偵測不到玩家標籤,視為畫面異常(例如卡在某個對話框、視窗跑掉),強制重啟遊戲流程
+    max_consecutive_player_not_found: int = 20
     
     # ---- debug ----
     debug: bool = False
@@ -1695,6 +1698,9 @@ if __name__ == "__main__":
     consecutive_reconnect_failures = 0
     max_consecutive_reconnect_failures = 3
 
+    # 連續偵測不到玩家標籤的次數: 超過門檻視為畫面異常,強制重啟遊戲
+    consecutive_player_not_found = 0
+
     # 啟動時搶一次焦點
     win = get_game_window(activate=True)
 
@@ -1768,12 +1774,35 @@ if __name__ == "__main__":
             )
 
             if player_target_pos is None:
-                print("警告: 未偵測到玩家位置，重新判斷")
+                consecutive_player_not_found += 1
+                print(f"警告: 未偵測到玩家位置，重新判斷 (連續 {consecutive_player_not_found} 次)")
+
+                if consecutive_player_not_found >= cfg.max_consecutive_player_not_found:
+                    print(f"[主程式] 連續 {consecutive_player_not_found} 次偵測不到玩家位置,"
+                          f"視為畫面異常,強制重啟遊戲...")
+                    keyup_all()
+                    success = reconnector.handle_reconnect()
+
+                    last_player_pos = None
+                    last_healer_pos = None
+                    consecutive_player_not_found = 0
+
+                    if success:
+                        consecutive_reconnect_failures = 0
+                    else:
+                        consecutive_reconnect_failures += 1
+                        if consecutive_reconnect_failures >= max_consecutive_reconnect_failures:
+                            print(f"[主程式] 連續 {consecutive_reconnect_failures} 次重連失敗,"
+                                  f"停止自動重連,請人工檢查狀況！")
+                            break
+                    continue
+
                 keyup_all()
                 pydirectinput.press('alt')
                 time.sleep(cfg.main_loop_sleep)
                 continue
 
+            consecutive_player_not_found = 0
             last_player_pos = player_target_pos
             px, py = player_target_pos
 
