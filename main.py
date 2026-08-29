@@ -1298,6 +1298,10 @@ class ReconnectConfig:
     server_select_threshold: float = 0.8
     disconnect_character_template: str = 'image/disconnect_character.png'
     disconnect_character_threshold: float = 0.7
+    # LIE DETECTOR 防外掛檢測視窗:遊戲不定時彈出、需要玩家動滑鼠配合的檢測畫面,
+    # 目前策略是偵測到就直接強制關閉遊戲並走完整重新連線流程,而不是嘗試自動配合檢測。
+    lie_detector_template: str = 'image/lie_detector_notice.png'
+    lie_detector_threshold: float = 0.7
 
     # 視窗 / 程序名稱
     game_window_title: str = '新楓之谷'
@@ -1379,6 +1383,20 @@ class ReconnectManager:
             return max_val >= self.rc.disconnect_threshold
         except Exception as e:
             print(f"[斷線重連模組] is_disconnected 發生例外: {e}")
+            return False
+
+    def is_lie_detector_open(self, game_img):
+        """判斷目前遊戲畫面是否顯示 LIE DETECTOR 防外掛檢測視窗(遊戲畫面內的圖案,非獨立跳出的視窗)"""
+        template = _load_tag_template(self.rc.lie_detector_template)
+        if template is None:
+            return False
+        try:
+            game_gray = cv2.cvtColor(game_img, cv2.COLOR_BGRA2GRAY)
+            res = cv2.matchTemplate(game_gray, template, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, _ = cv2.minMaxLoc(res)
+            return max_val >= self.rc.lie_detector_threshold
+        except Exception as e:
+            print(f"[斷線重連模組] is_lie_detector_open 發生例外: {e}")
             return False
 
     def force_close_game(self, max_retries=3, retry_delay=3.0):
@@ -1699,8 +1717,13 @@ if __name__ == "__main__":
             game_img = np.array(sct.grab(game_region))
             game_img_gray = cv2.cvtColor(game_img, cv2.COLOR_BGRA2GRAY)
 
-            # 斷線檢測模組
-            if cfg.enable_reconnect and reconnector.is_disconnected(game_img):
+            # 斷線檢測模組 (含 LIE DETECTOR 防外掛檢測視窗:偵測到就直接強制關閉遊戲重新連線,
+            # 不嘗試自動配合檢測,避免處理不了而卡在檢測畫面被判定為外掛)
+            lie_detector_open = cfg.enable_reconnect and reconnector.is_lie_detector_open(game_img)
+            if lie_detector_open:
+                print("[斷線重連模組] 偵測到 LIE DETECTOR 防外掛檢測視窗,強制關閉遊戲並重新連線...")
+
+            if cfg.enable_reconnect and (lie_detector_open or reconnector.is_disconnected(game_img)):
                 keyup_all()
                 success = reconnector.handle_reconnect()
 
