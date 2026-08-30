@@ -95,6 +95,9 @@ class BotConfig:
     # 連續幾次都偵測不到玩家標籤,視為畫面異常(例如卡在某個對話框、視窗跑掉),需要人工排除
     max_consecutive_player_not_found: int = 8
 
+    # 連續幾次都找不到遊戲視窗(例如遊戲當掉、視窗被關閉),強制進入重啟流程
+    max_consecutive_window_not_found: int = 10
+
     # ---- 警示音模組 (需要人工排除的狀況,例如 LIE DETECTOR 檢測、長時間偵測不到玩家) ----
     # 這兩種狀況都無法/不應該自動處理(LIE DETECTOR 需要真人動滑鼠配合,偵測不到玩家原因不明),
     # 所以改成發出提示音等待人工處理,而不是自動強制重啟遊戲。
@@ -122,7 +125,7 @@ class BotConfig:
     # 腳本執行過久,遊戲用戶端可能累積一些用其他方式難以排查的異常狀況(記憶體洩漏、連線不穩等),
     # 定時強制重啟遊戲有助於維持穩定性。設為 0 或負數停用。計時從腳本啟動、以及每次重連
     # (不論是斷線觸發或這個定時觸發)完成時重新開始算。
-    restart_interval_minutes: float = 60.0
+    restart_interval_minutes: float = 33.0
 
     # ---- 跨平台爬繩模組 ----
     # 定義地圖有哪些平台(遊戲視窗絕對像素座標的 Y 範圍 + 該層左右巡邏邊界,見 LayerConfig 說明)。
@@ -1635,28 +1638,26 @@ class ReconnectManager:
         self._click_ratio(game_win, self.rc.server_name_ratio, "server_name")
         time.sleep(2.0)
 
-        '''
+
         # 展開頻道選單,捲動到最下面
         self._click_ratio(game_win, self.rc.channel_scrollbar_ratio, "scroll_to_bottom")
         time.sleep(2.0)
 
-        # 點擊頻道區域,再用方向鍵微調到 ch.57
+        # 點擊頻道區域,再用方向鍵微調到 ch.57z q
         self._click_ratio(game_win, self.rc.channel_area_ratio_ch57, "channel_area")
         time.sleep(0.5)
         pydirectinput.press('down')
         time.sleep(0.5)
-        pydirectinput.press('down')
+        pydirectinput.press('right')
         time.sleep(0.5)
-        pydirectinput.press('down')
-        time.sleep(2.0)
-        pydirectinput.press('down')
+        pydirectinput.press('right')
         time.sleep(2.0)
         '''
 
         # 點擊頻道 ch.3
         self._click_ratio(game_win, self.rc.channel_area_ratio_ch3, "channel_area")
         time.sleep(2.0)
-
+        '''
 
         # 進入伺服器
         self._click_ratio(game_win, self.rc.channel_enter_ratio, "channel_area")
@@ -1757,6 +1758,9 @@ if __name__ == "__main__":
     # 連續偵測不到玩家標籤的次數: 超過門檻就發出提示音等待人工處理
     consecutive_player_not_found = 0
 
+    # 連續找不到遊戲視窗的次數: 超過門檻就強制進入重啟流程
+    consecutive_window_not_found = 0
+
     # 距離上次重啟(不論是斷線觸發、還是定時觸發)的時間戳記,用來判斷定時重啟模組
     last_restart_time = time.time()
 
@@ -1770,9 +1774,24 @@ if __name__ == "__main__":
             # 只更新視窗座標,不搶焦點 (省下 SetForegroundWindow 的開銷)
             win = get_game_window(activate=False)
             if not win:
-                print("找不到遊戲視窗")
+                consecutive_window_not_found += 1
+                print(f"找不到遊戲視窗 (連續 {consecutive_window_not_found} 次)")
+
+                if consecutive_window_not_found >= cfg.max_consecutive_window_not_found:
+                    print(f"[主程式] 連續 {consecutive_window_not_found} 次找不到遊戲視窗,強制進入重啟流程...")
+                    keyup_all()
+                    consecutive_window_not_found = 0
+                    last_player_pos = None
+                    last_healer_pos = None
+                    last_restart_time = time.time()
+                    if not reconnect_tracker.run(reconnector):
+                        break
+                    continue
+
                 time.sleep(1)
                 continue
+
+            consecutive_window_not_found = 0
 
             # 安全網: 每隔一段 tick 數重新搶一次焦點,避免使用者不慎切走視窗
             if cfg.reactivate_interval_ticks and tick_count % cfg.reactivate_interval_ticks == 0:
