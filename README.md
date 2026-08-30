@@ -37,7 +37,7 @@
    - 偵測到斷線後自動：強制關閉舊的遊戲進程 (`force_close_game`) → 開啟/喚醒 Chrome 並依比例座標點擊登入官網、gamapass 登入、選擇角色 → 等待伺服器選擇畫面出現 → 選伺服器、選頻道、進入遊戲。
    - 具備重試機制（`max_reconnect_attempts` 輪、每輪間隔 `retry_backoff_seconds` 秒），連續失敗達門檻會自動停止腳本以避免無限重試，並提示需要人工介入。
    - 所有點擊座標皆以「目標視窗寬高比例」而非桌面絕對座標計算，換解析度時較不易失準；開啟 `debug_click_screenshots` 可在每次點擊前存一張標記十字準心的截圖，方便校正比例。
-   - **需要人工排除的狀況改發提示音並停止主迴圈**：遊戲不定時彈出的 **LIE DETECTOR 防外掛檢測畫面**（`is_lie_detector_open`，範本圖 `lie_detector_template`，預設 `image/lie_detector_notice.png`）需要玩家動滑鼠配合才能通過，程式無法也不應該自動處理；連續 `max_consecutive_player_not_found`（預設 10 次）偵測不到玩家標籤，原因也不明（可能卡在某個對話框、視窗被切走、角色標籤模板失效）。這兩種情況都改成 `keyup_all()` 停止動作、呼叫 `play_alert_sound` 發出提示音（`winsound.Beep`，頻率/長度對應 `alert_beep_frequency` / `alert_beep_duration_ms`）、再直接 `break` 停止主迴圈，而不是強制重啟遊戲或繼續空轉——重啟也一樣通不過 LIE DETECTOR 檢測，兩種狀況原因都不是程式能自行排除的，交給人工處理完後手動重新啟動腳本即可。
+   - **需要人工排除的狀況改發提示音，不自動重啟**：遊戲不定時彈出的 **LIE DETECTOR 防外掛檢測畫面**（`is_lie_detector_open`，範本圖 `lie_detector_template`，預設 `image/lie_detector_notice.png`）需要玩家動滑鼠配合才能通過，程式無法也不應該自動處理；連續 `max_consecutive_player_not_found`（預設 10 次）偵測不到玩家標籤，原因也不明（可能卡在某個對話框、視窗被切走、角色標籤模板失效）。這兩種情況都改成 `keyup_all()` 停止動作後呼叫 `play_alert_sound` 發出提示音（`winsound.Beep`，頻率/長度對應 `alert_beep_frequency` / `alert_beep_duration_ms`），而不是強制重啟遊戲——重啟也一樣通不過 LIE DETECTOR 檢測，另一種狀況原因不明時貿然重啟也可能沒有幫助。`AlertThrottler` 會依 `alert_repeat_interval_seconds`（預設 5 秒）持續提醒，直到狀況解除（LIE DETECTOR 畫面消失、或重新偵測到玩家）才自動停止。
 
 8. **HP / MP 狀態監測模組 (Status Gauge Module)** — 目前主迴圈未啟用（程式碼保留供未來開啟）
    - 可對遊戲下方血條與魔力條區域進行 RGBA 色彩百分比計算，自動判斷狀態並觸發補血或休息 (`read_hp_mp`, `handle_hp_mp`)。
