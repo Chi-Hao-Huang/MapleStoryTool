@@ -97,10 +97,9 @@ class BotConfig:
 
     # ---- 警示音模組 (需要人工排除的狀況,例如 LIE DETECTOR 檢測、長時間偵測不到玩家) ----
     # 這兩種狀況都無法/不應該自動處理(LIE DETECTOR 需要真人動滑鼠配合,偵測不到玩家原因不明),
-    # 所以改成發出提示音等待人工處理,而不是自動強制重啟遊戲。
-    alert_beep_frequency: int = 1000            # 提示音頻率 (Hz)
-    alert_beep_duration_ms: int = 400           # 單次提示音長度 (毫秒)
-    alert_repeat_interval_seconds: float = 5.0  # 狀況持續存在時,每隔幾秒重複提醒一次
+    # 所以改成發出提示音後直接停止主迴圈,等人工處理完再手動重新啟動腳本。
+    alert_beep_frequency: int = 1000    # 提示音頻率 (Hz)
+    alert_beep_duration_ms: int = 400   # 單次提示音長度 (毫秒)
     
     # ---- debug ----
     debug: bool = False
@@ -234,22 +233,6 @@ def play_alert_sound(cfg: 'BotConfig'):
     except Exception as e:
         print(f"[警示音模組] 播放提示音失敗: {e}")
 
-
-class AlertThrottler:
-    """
-    避免同一個需要人工排除的狀況每個 tick 都響一次提示音,依 cfg.alert_repeat_interval_seconds
-    的間隔重複提醒,直到狀況解除(呼叫端不再呼叫 maybe_alert)為止。
-    """
-
-    def __init__(self):
-        self.last_alert_time: float = 0.0
-
-    def maybe_alert(self, cfg: 'BotConfig'):
-        now = time.time()
-        if now - self.last_alert_time >= cfg.alert_repeat_interval_seconds:
-            play_alert_sound(cfg)
-            self.last_alert_time = now
-    
 
 # ---------------------------------------------------------
 # HP / SP 判斷模組
@@ -1713,7 +1696,6 @@ if __name__ == "__main__":
     rope_traverser = RopeTraverser(cfg)
     patrol_lap_tracker = PatrolLapTracker()
     stuck_watchdog = StuckWatchdog(cfg)
-    alert_throttler = AlertThrottler()
     layer_sweep_director = LayerSweepDirector()
     tick_count = 0
 
@@ -1751,14 +1733,14 @@ if __name__ == "__main__":
             game_img_gray = cv2.cvtColor(game_img, cv2.COLOR_BGRA2GRAY)
 
             # LIE DETECTOR 防外掛檢測視窗:需要真人動滑鼠配合才能通過,程式無法也不應該自動處理,
-            # 改成發出提示音等待人工處理,而不是強制關閉遊戲重連(重連也一樣通不過檢測)。
+            # 發出提示音後直接停止主迴圈,等待人工處理完再手動重新啟動腳本。
             if cfg.enable_reconnect and reconnector.is_lie_detector_open(game_img):
-                print("[斷線重連模組] 偵測到 LIE DETECTOR 防外掛檢測視窗,發出提示音等待人工處理...")
+                print("[斷線重連模組] 偵測到 LIE DETECTOR 防外掛檢測視窗,發出提示音並停止主迴圈,請人工處理後重新啟動腳本！")
                 # 診斷用: 存一張當下畫面,方便觀察比對是否正常觸發(player_target_pos 此時可能還沒算出來,先用預設值)
                 save_debug_snapshot(win, game_img, (0, 0), cfg, path=f"debug_game_screen_liedetector_{tick_count}.png")
                 keyup_all()
-                alert_throttler.maybe_alert(cfg)
-                continue
+                play_alert_sound(cfg)
+                break
 
             # 斷線檢測模組
             if cfg.enable_reconnect and reconnector.is_disconnected(game_img):
@@ -1809,11 +1791,11 @@ if __name__ == "__main__":
 
                 if consecutive_player_not_found >= cfg.max_consecutive_player_not_found:
                     print(f"[主程式] 連續 {consecutive_player_not_found} 次偵測不到玩家位置,"
-                          f"發出提示音等待人工處理...")
+                          f"發出提示音並停止主迴圈,請人工處理後重新啟動腳本！")
                     save_debug_snapshot(win, game_img, (0, 0), cfg, path=f"debug_game_screen_noplayer_{tick_count}.png")
                     keyup_all()
-                    alert_throttler.maybe_alert(cfg)
-                    continue
+                    play_alert_sound(cfg)
+                    break
 
                 keyup_all()
                 pydirectinput.press('alt')
