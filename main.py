@@ -93,14 +93,14 @@ class BotConfig:
     healer_search_margin: int = 200
 
     # 連續幾次都偵測不到玩家標籤,視為畫面異常(例如卡在某個對話框、視窗跑掉),需要人工排除
-    max_consecutive_player_not_found: int = 10
+    max_consecutive_player_not_found: int = 8
 
     # ---- 警示音模組 (需要人工排除的狀況,例如 LIE DETECTOR 檢測、長時間偵測不到玩家) ----
     # 這兩種狀況都無法/不應該自動處理(LIE DETECTOR 需要真人動滑鼠配合,偵測不到玩家原因不明),
     # 所以改成發出提示音等待人工處理,而不是自動強制重啟遊戲。
     alert_beep_frequency: int = 1000            # 提示音頻率 (Hz)
     alert_beep_duration_ms: int = 400           # 單次提示音長度 (毫秒)
-    alert_repeat_interval_seconds: float = 5.0  # 狀況持續存在時,每隔幾秒重複提醒一次
+    alert_repeat_interval_seconds: float = 1  # 狀況持續存在時,每隔幾秒重複提醒一次
     
     # ---- debug ----
     debug: bool = False
@@ -162,7 +162,7 @@ class BotConfig:
     # 目標平台小地圖上若偵測到其他玩家或隊友的色點,本次就放棄換到那一層,留在原地繼續巡邏。
     detect_other_players: bool = True
 
-    # ---- 卡住偵測模組 (安全網,獨立於 RopeTraverser 運作) ----
+    # ---- 卡住偵測模組 ----
     # 角色若因為被怪物擊退等原因意外掛在繩子上(不是 RopeTraverser 主動觸發的爬繩),
     # 小地圖座標會長時間停在原地不動、且左右方向鍵操控不了 X 座標。
     # 連續 stuck_ticks_threshold 個 tick 座標都沒什麼變化就視為卡住,
