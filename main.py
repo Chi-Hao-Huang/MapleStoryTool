@@ -115,8 +115,14 @@ class BotConfig:
     healer_y_tolerance: int = 100   # Y座標差在此範圍內視為同一層
     healer_x_dead_zone: int = 100   # X座標差在此範圍內視為已到達補師旁邊,不再移動
 
-    # ---- 斷線重連模組 ---- 
+    # ---- 斷線重連模組 ----
     enable_reconnect: bool = True
+
+    # ---- 定時重啟模組 ----
+    # 腳本執行過久,遊戲用戶端可能累積一些用其他方式難以排查的異常狀況(記憶體洩漏、連線不穩等),
+    # 定時強制重啟遊戲有助於維持穩定性。設為 0 或負數停用。計時從腳本啟動、以及每次重連
+    # (不論是斷線觸發或這個定時觸發)完成時重新開始算。
+    restart_interval_minutes: float = 60.0
 
     # ---- 跨平台爬繩模組 ----
     # 定義地圖有哪些平台(遊戲視窗絕對像素座標的 Y 範圍 + 該層左右巡邏邊界,見 LayerConfig 說明)。
@@ -606,6 +612,30 @@ class TimedKeyTrigger:
             self.last_triggered_time = current_time
             return True
         return False
+
+
+class ReconnectAttemptTracker:
+    """
+    統一封裝「呼叫 handle_reconnect,並依成功/失敗更新連續失敗計數,失敗太多次就該停止主迴圈」
+    這段各觸發點(斷線偵測、定時重啟...)共用的邏輯,避免每個觸發點各自重複一份。
+    """
+
+    def __init__(self, max_consecutive_failures: int):
+        self.max_consecutive_failures = max_consecutive_failures
+        self.consecutive_failures = 0
+
+    def run(self, reconnector: 'ReconnectManager') -> bool:
+        """執行一次重連。回傳 False 代表已達連續失敗上限,呼叫端應該停止主迴圈"""
+        success = reconnector.handle_reconnect()
+        if success:
+            self.consecutive_failures = 0
+        else:
+            self.consecutive_failures += 1
+            if self.consecutive_failures >= self.max_consecutive_failures:
+                print(f"[主程式] 連續 {self.consecutive_failures} 次重連失敗,"
+                      f"停止自動重連,請人工檢查狀況！")
+                return False
+        return True
 
 
 # ---------------------------------------------------------
@@ -1721,12 +1751,14 @@ if __name__ == "__main__":
     last_player_pos: Optional[Tuple[int, int]] = None
     last_healer_pos: Optional[Tuple[int, int]] = None
 
-    # 連續重連失敗次數: 超過門檻就不再自動重試,避免無限狂點
-    consecutive_reconnect_failures = 0
-    max_consecutive_reconnect_failures = 3
+    # 統一管理重連的連續失敗計數: 超過門檻就不再自動重試,避免無限狂點
+    reconnect_tracker = ReconnectAttemptTracker(max_consecutive_failures=3)
 
     # 連續偵測不到玩家標籤的次數: 超過門檻就發出提示音等待人工處理
     consecutive_player_not_found = 0
+
+    # 距離上次重啟(不論是斷線觸發、還是定時觸發)的時間戳記,用來判斷定時重啟模組
+    last_restart_time = time.time()
 
     # 啟動時搶一次焦點
     win = get_game_window(activate=True)
@@ -1763,20 +1795,24 @@ if __name__ == "__main__":
             # 斷線檢測模組
             if cfg.enable_reconnect and reconnector.is_disconnected(game_img):
                 keyup_all()
-                success = reconnector.handle_reconnect()
-
                 # 重連後畫面完全不同,舊的局部搜尋座標一定不能再用,強制回到全螢幕搜尋
                 last_player_pos = None
                 last_healer_pos = None
+                last_restart_time = time.time()
+                if not reconnect_tracker.run(reconnector):
+                    break
+                continue
 
-                if success:
-                    consecutive_reconnect_failures = 0
-                else:
-                    consecutive_reconnect_failures += 1
-                    if consecutive_reconnect_failures >= max_consecutive_reconnect_failures:
-                        print(f"[主程式] 連續 {consecutive_reconnect_failures} 次重連失敗,"
-                              f"停止自動重連,請人工檢查狀況！")
-                        break
+            # 定時重啟模組: 腳本執行過久,強制重啟遊戲維持穩定性
+            if cfg.restart_interval_minutes > 0 and \
+                    (time.time() - last_restart_time) >= cfg.restart_interval_minutes * 60:
+                print(f"[主程式] 腳本已執行超過 {cfg.restart_interval_minutes} 分鐘,強制重啟遊戲...")
+                keyup_all()
+                last_player_pos = None
+                last_healer_pos = None
+                last_restart_time = time.time()
+                if not reconnect_tracker.run(reconnector):
+                    break
                 continue
 
             print("=" * 50)

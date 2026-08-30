@@ -37,6 +37,9 @@
    - 偵測到斷線後自動：強制關閉舊的遊戲進程 (`force_close_game`) → 開啟/喚醒 Chrome 並依比例座標點擊登入官網、gamapass 登入、選擇角色 → 等待伺服器選擇畫面出現 → 選伺服器、選頻道、進入遊戲。
    - 具備重試機制（`max_reconnect_attempts` 輪、每輪間隔 `retry_backoff_seconds` 秒），連續失敗達門檻會自動停止腳本以避免無限重試，並提示需要人工介入。
    - 所有點擊座標皆以「目標視窗寬高比例」而非桌面絕對座標計算，換解析度時較不易失準；開啟 `debug_click_screenshots` 可在每次點擊前存一張標記十字準心的截圖，方便校正比例。
+   - **`ReconnectAttemptTracker`**：把「呼叫 `handle_reconnect`、依成功/失敗更新連續失敗計數、失敗太多次就停止主迴圈」這段邏輯獨立出來，供斷線偵測與下面的定時重啟模組共用，避免每個觸發點各自重複一份。
+   - **定時重啟模組**：腳本執行過久，遊戲用戶端可能累積一些不容易單獨排查的異常（記憶體洩漏、連線不穩等），所以每隔 `cfg.restart_interval_minutes`（預設 60 分鐘）就會主動觸發一次完整重連流程，跟斷線觸發走的是同一套 `ReconnectAttemptTracker` 邏輯。計時從腳本啟動開始算，每次重連完成（不論是斷線觸發還是定時觸發）都會重新歸零；設為 0 或負數可停用。
+   - **需要人工排除的狀況改發提示音，不自動重啟**：遊戲不定時彈出的 **LIE DETECTOR 防外掛檢測畫面**（`is_lie_detector_open`，範本圖 `lie_detector_template`，預設 `image/lie_detector_notice.png`）需要玩家動滑鼠配合才能通過，程式無法也不應該自動處理；連續 `max_consecutive_player_not_found`（預設 8 次）偵測不到玩家標籤，原因也不明（可能卡在某個對話框、視窗被切走、角色標籤模板失效）。這兩種情況都改成 `keyup_all()` 停止動作後呼叫 `play_alert_sound` 發出提示音（`winsound.Beep`，頻率/長度對應 `alert_beep_frequency` / `alert_beep_duration_ms`），而不是強制重啟遊戲——重啟也一樣通不過 LIE DETECTOR 檢測，另一種狀況原因不明時貿然重啟也可能沒有幫助。`AlertThrottler` 會依 `alert_repeat_interval_seconds` 持續提醒，直到狀況解除（LIE DETECTOR 畫面消失、或重新偵測到玩家）才自動停止。
    - **需要人工排除的狀況改發提示音，不自動重啟**：遊戲不定時彈出的 **LIE DETECTOR 防外掛檢測畫面**（`is_lie_detector_open`，範本圖 `lie_detector_template`，預設 `image/lie_detector_notice.png`）需要玩家動滑鼠配合才能通過，程式無法也不應該自動處理；連續 `max_consecutive_player_not_found`（預設 10 次）偵測不到玩家標籤，原因也不明（可能卡在某個對話框、視窗被切走、角色標籤模板失效）。這兩種情況都改成 `keyup_all()` 停止動作後呼叫 `play_alert_sound` 發出提示音（`winsound.Beep`，頻率/長度對應 `alert_beep_frequency` / `alert_beep_duration_ms`），而不是強制重啟遊戲——重啟也一樣通不過 LIE DETECTOR 檢測，另一種狀況原因不明時貿然重啟也可能沒有幫助。`AlertThrottler` 會依 `alert_repeat_interval_seconds`（預設 5 秒）持續提醒，直到狀況解除（LIE DETECTOR 畫面消失、或重新偵測到玩家）才自動停止。
 
 8. **HP / MP 狀態監測模組 (Status Gauge Module)** — 目前主迴圈未啟用（程式碼保留供未來開啟）
