@@ -44,14 +44,23 @@ class LayerConfig:
 @dataclass
 class RopeConfig:
     """
-    繩索設定:連接的下層/上層 index(對應 LayerConfig.index),以及繩索所在的 X 座標。
+    平台連接設定:連接的下層/上層 index(對應 LayerConfig.index),以及連接的類型:
 
-    X 座標同樣是「遊戲視窗絕對像素座標」(見 LayerConfig 說明),不是小地圖裁切區域內部的相對值,
+    - "rope"(預設):實體繩索,往上爬需要先對齊繩索的確切 X 座標(見 x 說明)才能抓到繩子。
+    - "flash_jump":角色具備的瞬間移動技能(方向鍵上 + flash_jump_key),不需要對齊到某個確切點,
+      只要 X 座標落在上層平台自己的 left_bound/right_bound 範圍內就能觸發瞬間往上移動,
+      跟往下掉落一樣是瞬間動作、不用精準對位。
+
+    往下掉落(兩種類型皆同)一律不需要對齊,平台上任何位置都能觸發,見 RopeTraverser 說明。
+
+    x 座標是「遊戲視窗絕對像素座標」(見 LayerConfig 說明),不是小地圖裁切區域內部的相對值,
     也不受角色移動/畫面捲動影響(因為是從小地圖上的色點換算而來,小地圖本身固定不動)。
+    "flash_jump" 類型不需要對齊特定 X 座標,此欄位會被忽略,可留 None 不填。
     """
-    x: int
     lower_layer: int
     upper_layer: int
+    x: Optional[int] = None
+    connection_type: str = "rope"   # "rope" 或 "flash_jump"
 
 
 @dataclass
@@ -139,6 +148,9 @@ class BotConfig:
     climb_up_key: str = 'up'
     drop_down_key: str = 'down'
     drop_jump_key: str = 'alt'
+    # 瞬間移動技能鍵(方向鍵上 + 這個鍵),用於 RopeConfig.connection_type == "flash_jump" 的平台連接。
+    # 跟 drop_jump_key 是不同的按鍵(例如職業的瞬間移動技能另外綁在空白鍵,不是跳躍鍵本身)。
+    flash_jump_key: str = 'space'
 
     rope_x_tolerance: int = 4          # 判定「已對齊繩索正下方/正上方」的小地圖 X 容忍度(像素)
     layer_reach_tolerance: int = 1     # 判定「已爬到目標層」的小地圖 Y 容忍度(像素)
@@ -850,20 +862,23 @@ class RopeTraverser:
     一旦呼叫 start() 啟動,接下來每個 tick 都改由 step() 接管移動判斷,依序經過:
 
     - "align": 左右移動,對齊繩索的 X 座標(遊戲視窗絕對像素座標,見 RopeConfig 說明)。
-    - "grab" (只有往上爬、且 cfg.use_jump_to_grab_rope 開啟時才會經過):
+      只有 connection_type == "rope" 的往上爬才會經過這個階段;"flash_jump" 連接跟往下掉落
+      一樣是瞬間動作,由呼叫端(主迴圈)在啟動前就先確認位置條件符合,透過 skip_align=True
+      直接跳到 "climb" 階段觸發,見 start() 說明。
+    - "grab" (只有 connection_type == "rope" 往上爬、且 cfg.use_jump_to_grab_rope 開啟時才會經過):
       對齊後改用「方向鍵 + 跳躍鍵」斜向跳起、同時按住爬繩鍵去咬繩,
       比站在原地直接按爬繩鍵更容易真的抓到(咬繩子有機率咬不到,斜跳能多涵蓋一點橫向距離)。
       每隔 grab_retry_interval 秒用 climbing_pose_template 比對確認是否已經抓到繩子,
       沒抓到就再跳一次,重試達 grab_max_retries 次仍失敗就放棄這次爬繩。
-    - "climb": 已確認在爬繩(或掉落已觸發),持續按著爬繩鍵,直到連續
+    - "climb": 往下掉落、或往上的 "flash_jump" 連接,都是觸發後立刻視為完成(瞬間動作)。
+      只有 connection_type == "rope" 的往上爬會持續按著爬繩鍵,直到連續
       climb_pose_lost_confirm_ticks 次都偵測不到爬繩姿勢才視為爬完(而不是用小地圖 Y 座標推測——
       小地圖太小,Y 範圍常常在角色實際到達平台前就先進入判定範圍,導致提前放開爬繩鍵卡在半路)。
-      往下掉落是瞬間動作,對齊後按一次即完成,不會經過 grab 階段。
       若設定了 cfg.climb_drift_key,確認抓到繩子起就會額外持續按著這個方向鍵直到爬完放開,
       讓角色到達平台時順勢往內側移動一點,避免落在繩索正上方的平台邊緣被怪物撞下去。
 
-    start() 也可以傳入 skip_align=True(僅用於 direction="down"),跳過 "align" 直接觸發掉落——
-    掉落是瞬間動作,平台上任何位置都能觸發,不需要先走到繩索的 X 座標才能掉下去。
+    start() 也可以傳入 skip_align=True,跳過 "align" 直接觸發動作:往下掉落任何位置都能觸發,
+    "flash_jump" 連接則是只要在上層平台範圍內就能觸發,兩者都不需要先走到某個確切 X 座標。
     """
 
     def __init__(self, cfg: BotConfig):
@@ -889,10 +904,13 @@ class RopeTraverser:
 
     def start(self, rope: RopeConfig, direction: str, skip_align: bool = False):
         """
-        skip_align=True 用於「往下掉落且不需要對齊 X 座標」的情境:掉落是瞬間動作,
-        平台上任何位置都能觸發,不用像往上爬繩一樣先走到繩索的確切位置。
+        skip_align=True 用於不需要對齊 X 座標的情境:往下掉落(任何位置都能觸發),
+        或 connection_type == "flash_jump" 的瞬間移動連接(只要在上層平台範圍內就能觸發)。
+        兩者都是瞬間動作,不用像實體繩索往上爬一樣先走到確切位置。
         """
-        action_label = "爬繩上樓" if direction == "up" else "掉落下樓"
+        action_label = {"up": "爬繩上樓", "down": "掉落下樓"}[direction]
+        if direction == "up" and rope.connection_type == "flash_jump":
+            action_label = "瞬間移動上樓"
         print(f"[跨平台爬繩模組] 開始{action_label} (繩索 X={rope.x}, "
               f"平台 {rope.lower_layer} <-> {rope.upper_layer})")
         self.active = True
@@ -903,9 +921,12 @@ class RopeTraverser:
         self.grab_attempts = 0
         self.pose_lost_streak = 0
 
-        if skip_align and direction == "down":
+        if skip_align:
             self.phase = "climb"
-            self._perform_drop()
+            if direction == "down":
+                self._perform_drop()
+            else:
+                self._perform_flash_jump()
         else:
             self.phase = "align"
 
@@ -914,6 +935,12 @@ class RopeTraverser:
         pydirectinput.keyDown(self.cfg.drop_down_key, _pause=False)
         time.sleep(0.05)
         pydirectinput.press(self.cfg.drop_jump_key, _pause=False)
+
+    def _perform_flash_jump(self):
+        """按住上鍵再點一下瞬間移動鍵,觸發瞬間往上移動到上層平台(瞬間動作,不需對齊 X 座標)"""
+        pydirectinput.keyDown(self.cfg.climb_up_key, _pause=False)
+        time.sleep(0.05)
+        pydirectinput.press(self.cfg.flash_jump_key, _pause=False)
 
     def _finish(self, reason=""):
         keyup_all(('left', 'right', self.cfg.climb_up_key, self.cfg.drop_down_key))
@@ -1006,7 +1033,12 @@ class RopeTraverser:
                 self._finish("掉落動作已觸發")
                 return True
 
-            # 用爬繩姿勢來判斷有沒有爬完
+            if self.rope.connection_type == "flash_jump":
+                # 瞬間移動也是瞬間動作,觸發後就視為完成,由下個 tick 重新判斷所在平台
+                self._finish("瞬間移動已觸發")
+                return True
+
+            # 用爬繩姿勢來判斷有沒有爬完(僅適用於實體繩索)
             if player_screen_gray is not None:
                 still_climbing = is_player_climbing(
                     player_screen_gray, player_pos,
@@ -1781,7 +1813,13 @@ if __name__ == "__main__":
     cfg.ropes = [
         # 下平台(0) <-> 中間層平台(1) 的繩索
         RopeConfig(x=85, lower_layer=0, upper_layer=1),
-    
+
+        # 中間層平台(1) <-> 上層平台(2): 瞬間移動技能(方向鍵上 + flash_jump_key),
+        # 不需要對齊 X 座標,只要落在平台2的 left_bound/right_bound 範圍內就會觸發
+        RopeConfig(lower_layer=1, upper_layer=2, connection_type="flash_jump"),
+
+        # 上層平台(2) <-> 最上層平台(3): 同樣用瞬間移動技能
+        RopeConfig(lower_layer=2, upper_layer=3, connection_type="flash_jump"),
     ]
 
 
@@ -2023,23 +2061,46 @@ if __name__ == "__main__":
                     # 用 LayerSweepDirector 決定這次該往上還是往下,讓角色完整掃過所有平台,
                     direction = layer_sweep_director.decide(current_layer.index, cfg.ropes)
                     skip_align = (direction == "down")
+                    in_position = (direction == "down")   # 往下不需要對齊,一律視為已就位
+                    walk_dir = None
 
                     if direction == "down":
                         # 往下掉落不需要對齊繩索 X 座標,平台上任何位置都能觸發
                         rope = find_rope_down_from_layer(current_layer.index, cfg.ropes)
                     else:
-                        # 往上爬:主動選定目標繩索(平台若有分岔,輪流挑選確保每條分岔都會走到),
-                        # 在對齊之前主動朝它移動,而不是被動等一般巡邏折返剛好經過那個 X 座標。
+                        # 往上:主動選定目標連接(平台若有分岔,輪流挑選確保每條分岔都會走到),
+                        # 在就位之前主動朝它移動,而不是被動等一般巡邏折返剛好經過那個位置。
                         rope = layer_sweep_director.pick_up_rope(current_layer.index, cfg.ropes)
 
-                    if rope is not None and direction == "up" and \
-                            abs(abs_mm_x - rope.x) > cfg.rope_x_tolerance:
-                        move_dir = "right" if rope.x > abs_mm_x else "left"
+                        if rope is not None and rope.connection_type == "flash_jump":
+                            # 瞬間移動: 不用對齊確切位置,只要在上層平台的左右邊界範圍內就能觸發
+                            skip_align = True
+                            target_layer_cfg = next(
+                                (l for l in cfg.layers if l.index == rope.upper_layer), None
+                            )
+                            if target_layer_cfg is None:
+                                print(f"警告: flash_jump 連接的目標平台 {rope.upper_layer} "
+                                      f"在 cfg.layers 中找不到對應設定,略過這次嘗試")
+                                in_position = False
+                            elif abs_mm_x < target_layer_cfg.left_bound:
+                                walk_dir = "right"
+                            elif abs_mm_x > target_layer_cfg.right_bound:
+                                walk_dir = "left"
+                            else:
+                                in_position = True
+                        elif rope is not None:
+                            # 實體繩索: 需要對齊繩索的確切 X 座標
+                            if abs(abs_mm_x - rope.x) <= cfg.rope_x_tolerance:
+                                in_position = True
+                            else:
+                                walk_dir = "right" if rope.x > abs_mm_x else "left"
+
+                    if rope is not None and not in_position and walk_dir is not None:
                         keyup_all()
-                        pydirectinput.keyDown(move_dir, _pause=False)
-                        move_direction = move_dir
+                        pydirectinput.keyDown(walk_dir, _pause=False)
+                        move_direction = walk_dir
                         handled_by_rope = True
-                    elif rope is not None and rope_traverser.can_start(rope):
+                    elif rope is not None and in_position and rope_traverser.can_start(rope):
                         target_layer_index = rope.upper_layer if direction == "up" else rope.lower_layer
 
                         target_occupied = False
