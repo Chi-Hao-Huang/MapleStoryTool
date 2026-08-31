@@ -833,22 +833,11 @@ def find_layer_by_y(abs_mm_y, layers: List[LayerConfig]) -> Optional[LayerConfig
     return None
 
 
-def find_rope_near_x(abs_mm_x, layer_index, ropes: List[RopeConfig], tolerance) -> Optional[RopeConfig]:
-    """在目前平台中,找出 X 座標(遊戲視窗絕對像素座標,見 RopeConfig 說明)落在容忍範圍內、
-    且與這一層相連(上層或下層皆可)的繩索。用於「往上爬」的情境——抓繩需要對齊繩索的確切位置。"""
-    for rope in ropes:
-        if layer_index not in (rope.lower_layer, rope.upper_layer):
-            continue
-        if abs(abs_mm_x - rope.x) <= tolerance:
-            return rope
-    return None
-
-
 def find_rope_down_from_layer(layer_index, ropes: List[RopeConfig]) -> Optional[RopeConfig]:
     """
     找出可以從這一層直接往下掉落到下層的繩索連接,不檢查 X 座標。
     掉落(下+跳躍鍵)是瞬間動作,平台上任何位置都能直接掉到下層,不像往上爬繩需要先對齊繩索位置;
-    有些繩索的 X 座標甚至落在下層平台自己的巡邏邊界之外,單靠 find_rope_near_x 永遠不會被觸發到。
+    有些繩索的 X 座標甚至落在下層平台自己的巡邏邊界之外,單靠對齊 X 座標永遠不會被觸發到。
     """
     for rope in ropes:
         if rope.upper_layer == layer_index:
@@ -1148,17 +1137,24 @@ class StuckWatchdog:
 
 class LayerSweepDirector:
     """
-    決定跨平台移動時該往上還是往下,讓角色像電梯一樣完整掃過所有平台
-    (例如 0 -> 1 -> 2 -> 1 -> 0 -> 1 -> 2 -> ...),而不是因為「往下掉落不需要對齊、
-    永遠比往上爬容易觸發」,就一直卡在下面幾層來回移動、永遠上不到最上層。
+    決定跨平台移動時該往上還是往下,讓角色像電梯一樣完整掃過所有平台,而不是因為
+    「往下掉落不需要對齊、永遠比往上爬容易觸發」,就一直卡在下面幾層來回移動、永遠上不到最上層。
 
     邏輯很單純(類似磁碟排程的 SCAN 演算法):目前往哪個方向走(up/down)就盡量繼續往那個方向走,
     直到那個方向已經沒有平台可以再移動(到頂或到底)才反過來。
-    這假設平台是像樓層一樣「一條線」排列、沒有分岔,符合目前地圖的接法。
+
+    地圖不一定是單純一條線排列 —— 一個平台可以同時連到多個「更上層」的平台(例如地面連接
+    左右兩側各自往上的兩條分岔路線)。has_up/has_down 只判斷「這個方向還有沒有平台可以走」,
+    不管有幾條分岔都算數,所以 SCAN 邏輯本身不受分岔影響;但「該挑哪一條分岔」由
+    pick_up_rope 另外用輪流(round-robin)方式決定,確保每個分岔都有機會被走到,
+    不會因為某條繩索剛好離平台巡邏路徑比較近,就永遠只走那一條、另一條分岔永遠去不到。
     """
 
     def __init__(self, initial_direction: str = "up"):
         self.direction = initial_direction
+        self._up_rope_cursor: dict = {}          # layer_index -> 上次選到的候選 index(輪流用)
+        self._pending_layer: Optional[int] = None
+        self._pending_target: Optional[RopeConfig] = None
 
     def decide(self, current_layer_index: int, ropes: List[RopeConfig]) -> str:
         """回傳這次應該嘗試的方向("up" 或 "down"),必要時會先反轉掃描方向"""
@@ -1171,6 +1167,33 @@ class LayerSweepDirector:
             self.direction = "up"
 
         return self.direction
+
+    def pick_up_rope(self, current_layer_index: int, ropes: List[RopeConfig]) -> Optional[RopeConfig]:
+        """
+        選出這一層要往上爬的目標繩索。只有一條往上的路就直接回傳它;有多條分岔時,
+        每次「重新選擇」(呼叫端在真的出發前都會沿用同一個選擇,見 clear_pending)
+        就輪流換下一條,確保所有分岔平均都會被走到。
+        """
+        if self._pending_layer != current_layer_index:
+            self._pending_layer = current_layer_index
+            self._pending_target = None
+
+        if self._pending_target is not None:
+            return self._pending_target
+
+        candidates = [r for r in ropes if r.lower_layer == current_layer_index]
+        if not candidates:
+            return None
+
+        cursor = (self._up_rope_cursor.get(current_layer_index, -1) + 1) % len(candidates)
+        self._up_rope_cursor[current_layer_index] = cursor
+        self._pending_target = candidates[cursor]
+        return self._pending_target
+
+    def clear_pending(self):
+        """實際開始爬繩(或放棄這次嘗試)後呼叫,下次到同一層要再重新判斷/輪到下一個分岔"""
+        self._pending_layer = None
+        self._pending_target = None
 
 
 # ---------------------------------------------------------
@@ -1951,12 +1974,18 @@ if __name__ == "__main__":
                         # 往下掉落不需要對齊繩索 X 座標,平台上任何位置都能觸發
                         rope = find_rope_down_from_layer(current_layer.index, cfg.ropes)
                     else:
-                        # 往上爬需要先對齊繩索的確切 X 座標
-                        rope = find_rope_near_x(abs_mm_x, current_layer.index, cfg.ropes, cfg.rope_x_tolerance)
-                        if rope is not None and rope.lower_layer != current_layer.index:
-                            rope = None  # find_rope_near_x 也會配對到下層繩索,這裡只要「往上」的
+                        # 往上爬:主動選定目標繩索(平台若有分岔,輪流挑選確保每條分岔都會走到),
+                        # 在對齊之前主動朝它移動,而不是被動等一般巡邏折返剛好經過那個 X 座標。
+                        rope = layer_sweep_director.pick_up_rope(current_layer.index, cfg.ropes)
 
-                    if rope is not None and rope_traverser.can_start(rope):
+                    if rope is not None and direction == "up" and \
+                            abs(abs_mm_x - rope.x) > cfg.rope_x_tolerance:
+                        move_dir = "right" if rope.x > abs_mm_x else "left"
+                        keyup_all()
+                        pydirectinput.keyDown(move_dir, _pause=False)
+                        move_direction = move_dir
+                        handled_by_rope = True
+                    elif rope is not None and rope_traverser.can_start(rope):
                         target_layer_index = rope.upper_layer if direction == "up" else rope.lower_layer
 
                         target_occupied = False
@@ -1978,6 +2007,7 @@ if __name__ == "__main__":
                             keyup_all()
                             rope_traverser.start(rope, direction, skip_align=skip_align)
                             patrol_lap_tracker.reset()
+                            layer_sweep_director.clear_pending()
                             handled_by_rope = True
 
                 if not handled_by_rope:
