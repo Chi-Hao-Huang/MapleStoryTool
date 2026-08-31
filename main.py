@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 import pyautogui
 import subprocess
+import winsound
 
 # ---------------------------------------------------------
 # 設定集中管理
@@ -59,8 +60,11 @@ class BotConfig:
     monsters_threshold: float = 0.82
     template_paths: List[str] = field(default_factory=lambda: [
       # 'image/骷髏狗2.png',
-       'image/木面人.png',
+      # 'image/木面人.png',
       # 'image/骷髏士兵1.png',
+       'image/紅螃蟹.png',
+       'image/青螃蟹.png',
+       'image/海龜.png',
     ])
     player_threshold: float = 0.6
     attack_distance_threshold: int = 220
@@ -91,11 +95,21 @@ class BotConfig:
     player_search_margin: int = 150
     healer_search_margin: int = 200
 
-    # 連續幾次都偵測不到玩家標籤,視為畫面異常(例如卡在某個對話框、視窗跑掉),強制重啟遊戲流程
-    max_consecutive_player_not_found: int = 10
+    # 連續幾次都偵測不到玩家標籤,視為畫面異常(例如卡在某個對話框、視窗跑掉),需要人工排除
+    max_consecutive_player_not_found: int = 8
+
+    # 連續幾次都找不到遊戲視窗(例如遊戲當掉、視窗被關閉),強制進入重啟流程
+    max_consecutive_window_not_found: int = 10
+
+    # ---- 警示音模組 (需要人工排除的狀況,例如 LIE DETECTOR 檢測、長時間偵測不到玩家) ----
+    # 這兩種狀況都無法/不應該自動處理(LIE DETECTOR 需要真人動滑鼠配合,偵測不到玩家原因不明),
+    # 所以改成發出提示音等待人工處理,而不是自動強制重啟遊戲。
+    alert_beep_frequency: int = 1000            # 提示音頻率 (Hz)
+    alert_beep_duration_ms: int = 400           # 單次提示音長度 (毫秒)
+    alert_repeat_interval_seconds: float = 1  # 狀況持續存在時,每隔幾秒重複提醒一次
     
     # ---- debug ----
-    debug: bool = False
+    debug: bool = True
     debug_show_window: bool = False   # debug 時是否即時顯示監看視窗
     debug_save_image: bool = True   # debug 時是否額外存成檔案
     
@@ -107,8 +121,14 @@ class BotConfig:
     healer_y_tolerance: int = 100   # Y座標差在此範圍內視為同一層
     healer_x_dead_zone: int = 100   # X座標差在此範圍內視為已到達補師旁邊,不再移動
 
-    # ---- 斷線重連模組 ---- 
+    # ---- 斷線重連模組 ----
     enable_reconnect: bool = True
+
+    # ---- 定時重啟模組 ----
+    # 腳本執行過久,遊戲用戶端可能累積一些用其他方式難以排查的異常狀況(記憶體洩漏、連線不穩等),
+    # 定時強制重啟遊戲有助於維持穩定性。設為 0 或負數停用。計時從腳本啟動、以及每次重連
+    # (不論是斷線觸發或這個定時觸發)完成時重新開始算。
+    restart_interval_minutes: float = 33.0
 
     # ---- 跨平台爬繩模組 ----
     # 定義地圖有哪些平台(遊戲視窗絕對像素座標的 Y 範圍 + 該層左右巡邏邊界,見 LayerConfig 說明)。
@@ -154,7 +174,7 @@ class BotConfig:
     # 目標平台小地圖上若偵測到其他玩家或隊友的色點,本次就放棄換到那一層,留在原地繼續巡邏。
     detect_other_players: bool = True
 
-    # ---- 卡住偵測模組 (安全網,獨立於 RopeTraverser 運作) ----
+    # ---- 卡住偵測模組 ----
     # 角色若因為被怪物擊退等原因意外掛在繩子上(不是 RopeTraverser 主動觸發的爬繩),
     # 小地圖座標會長時間停在原地不動、且左右方向鍵操控不了 X 座標。
     # 連續 stuck_ticks_threshold 個 tick 座標都沒什麼變化就視為卡住,
@@ -217,6 +237,30 @@ def keyup_all(keys=('left', 'right')):
 
 def print_debug_img(img):
     cv2.imwrite('debug_game_img.png', img)
+
+
+def play_alert_sound(cfg: 'BotConfig'):
+    """發出提示音,用於需要人工排除的狀況(例如 LIE DETECTOR 檢測、長時間偵測不到玩家)"""
+    try:
+        winsound.Beep(cfg.alert_beep_frequency, cfg.alert_beep_duration_ms)
+    except Exception as e:
+        print(f"[警示音模組] 播放提示音失敗: {e}")
+
+
+class AlertThrottler:
+    """
+    避免同一個需要人工排除的狀況每個 tick 都響一次提示音,依 cfg.alert_repeat_interval_seconds
+    的間隔重複提醒,直到狀況解除(呼叫端不再呼叫 maybe_alert)為止。
+    """
+
+    def __init__(self):
+        self.last_alert_time: float = 0.0
+
+    def maybe_alert(self, cfg: 'BotConfig'):
+        now = time.time()
+        if now - self.last_alert_time >= cfg.alert_repeat_interval_seconds:
+            play_alert_sound(cfg)
+            self.last_alert_time = now
     
 
 # ---------------------------------------------------------
@@ -574,6 +618,30 @@ class TimedKeyTrigger:
             self.last_triggered_time = current_time
             return True
         return False
+
+
+class ReconnectAttemptTracker:
+    """
+    統一封裝「呼叫 handle_reconnect,並依成功/失敗更新連續失敗計數,失敗太多次就該停止主迴圈」
+    這段各觸發點(斷線偵測、定時重啟...)共用的邏輯,避免每個觸發點各自重複一份。
+    """
+
+    def __init__(self, max_consecutive_failures: int):
+        self.max_consecutive_failures = max_consecutive_failures
+        self.consecutive_failures = 0
+
+    def run(self, reconnector: 'ReconnectManager') -> bool:
+        """執行一次重連。回傳 False 代表已達連續失敗上限,呼叫端應該停止主迴圈"""
+        success = reconnector.handle_reconnect()
+        if success:
+            self.consecutive_failures = 0
+        else:
+            self.consecutive_failures += 1
+            if self.consecutive_failures >= self.max_consecutive_failures:
+                print(f"[主程式] 連續 {self.consecutive_failures} 次重連失敗,"
+                      f"停止自動重連,請人工檢查狀況！")
+                return False
+        return True
 
 
 # ---------------------------------------------------------
@@ -1573,28 +1641,26 @@ class ReconnectManager:
         self._click_ratio(game_win, self.rc.server_name_ratio, "server_name")
         time.sleep(2.0)
 
-        '''
+
         # 展開頻道選單,捲動到最下面
         self._click_ratio(game_win, self.rc.channel_scrollbar_ratio, "scroll_to_bottom")
         time.sleep(2.0)
 
-        # 點擊頻道區域,再用方向鍵微調到 ch.57
+        # 點擊頻道區域,再用方向鍵微調到 ch.57z q
         self._click_ratio(game_win, self.rc.channel_area_ratio_ch57, "channel_area")
         time.sleep(0.5)
         pydirectinput.press('down')
         time.sleep(0.5)
-        pydirectinput.press('down')
+        pydirectinput.press('right')
         time.sleep(0.5)
-        pydirectinput.press('down')
-        time.sleep(2.0)
-        pydirectinput.press('down')
+        pydirectinput.press('right')
         time.sleep(2.0)
         '''
 
         # 點擊頻道 ch.3
         self._click_ratio(game_win, self.rc.channel_area_ratio_ch3, "channel_area")
         time.sleep(2.0)
-
+        '''
 
         # 進入伺服器
         self._click_ratio(game_win, self.rc.channel_enter_ratio, "channel_area")
@@ -1681,6 +1747,7 @@ if __name__ == "__main__":
     rope_traverser = RopeTraverser(cfg)
     patrol_lap_tracker = PatrolLapTracker()
     stuck_watchdog = StuckWatchdog(cfg)
+    alert_throttler = AlertThrottler()
     layer_sweep_director = LayerSweepDirector()
     tick_count = 0
 
@@ -1688,12 +1755,17 @@ if __name__ == "__main__":
     last_player_pos: Optional[Tuple[int, int]] = None
     last_healer_pos: Optional[Tuple[int, int]] = None
 
-    # 連續重連失敗次數: 超過門檻就不再自動重試,避免無限狂點
-    consecutive_reconnect_failures = 0
-    max_consecutive_reconnect_failures = 3
+    # 統一管理重連的連續失敗計數: 超過門檻就不再自動重試,避免無限狂點
+    reconnect_tracker = ReconnectAttemptTracker(max_consecutive_failures=3)
 
-    # 連續偵測不到玩家標籤的次數: 超過門檻視為畫面異常,強制重啟遊戲
+    # 連續偵測不到玩家標籤的次數: 超過門檻就發出提示音等待人工處理
     consecutive_player_not_found = 0
+
+    # 連續找不到遊戲視窗的次數: 超過門檻就強制進入重啟流程
+    consecutive_window_not_found = 0
+
+    # 距離上次重啟(不論是斷線觸發、還是定時觸發)的時間戳記,用來判斷定時重啟模組
+    last_restart_time = time.time()
 
     # 啟動時搶一次焦點
     win = get_game_window(activate=True)
@@ -1705,9 +1777,24 @@ if __name__ == "__main__":
             # 只更新視窗座標,不搶焦點 (省下 SetForegroundWindow 的開銷)
             win = get_game_window(activate=False)
             if not win:
-                print("找不到遊戲視窗")
+                consecutive_window_not_found += 1
+                print(f"找不到遊戲視窗 (連續 {consecutive_window_not_found} 次)")
+
+                if consecutive_window_not_found >= cfg.max_consecutive_window_not_found:
+                    print(f"[主程式] 連續 {consecutive_window_not_found} 次找不到遊戲視窗,強制進入重啟流程...")
+                    keyup_all()
+                    consecutive_window_not_found = 0
+                    last_player_pos = None
+                    last_healer_pos = None
+                    last_restart_time = time.time()
+                    if not reconnect_tracker.run(reconnector):
+                        break
+                    continue
+
                 time.sleep(1)
                 continue
+
+            consecutive_window_not_found = 0
 
             # 安全網: 每隔一段 tick 數重新搶一次焦點,避免使用者不慎切走視窗
             if cfg.reactivate_interval_ticks and tick_count % cfg.reactivate_interval_ticks == 0:
@@ -1717,30 +1804,37 @@ if __name__ == "__main__":
             game_img = np.array(sct.grab(game_region))
             game_img_gray = cv2.cvtColor(game_img, cv2.COLOR_BGRA2GRAY)
 
-            # 斷線檢測模組 (含 LIE DETECTOR 防外掛檢測視窗:偵測到就直接強制關閉遊戲重新連線,
-            # 不嘗試自動配合檢測,避免處理不了而卡在檢測畫面被判定為外掛)
-            lie_detector_open = cfg.enable_reconnect and reconnector.is_lie_detector_open(game_img)
-            if lie_detector_open:
-                print("[斷線重連模組] 偵測到 LIE DETECTOR 防外掛檢測視窗,強制關閉遊戲並重新連線...")
+            # LIE DETECTOR 防外掛檢測視窗:需要真人動滑鼠配合才能通過,程式無法也不應該自動處理,
+            # 改成發出提示音等待人工處理,而不是強制關閉遊戲重連(重連也一樣通不過檢測)。
+            if cfg.enable_reconnect and reconnector.is_lie_detector_open(game_img):
+                print("[斷線重連模組] 偵測到 LIE DETECTOR 防外掛檢測視窗,發出提示音等待人工處理...")
                 # 診斷用: 存一張當下畫面,方便觀察比對是否正常觸發(player_target_pos 此時可能還沒算出來,先用預設值)
-                save_debug_snapshot(win, game_img, (0, 0), cfg, path=f"debug_game_screen_liedector_{tick_count}.png")
-
-            if cfg.enable_reconnect and (lie_detector_open or reconnector.is_disconnected(game_img)):
+                save_debug_snapshot(win, game_img, (0, 0), cfg, path=f"debug_game_screen_liedetector_{tick_count}.png")
                 keyup_all()
-                success = reconnector.handle_reconnect()
+                alert_throttler.maybe_alert(cfg)
+                continue
 
+            # 斷線檢測模組
+            if cfg.enable_reconnect and reconnector.is_disconnected(game_img):
+                keyup_all()
                 # 重連後畫面完全不同,舊的局部搜尋座標一定不能再用,強制回到全螢幕搜尋
                 last_player_pos = None
                 last_healer_pos = None
+                last_restart_time = time.time()
+                if not reconnect_tracker.run(reconnector):
+                    break
+                continue
 
-                if success:
-                    consecutive_reconnect_failures = 0
-                else:
-                    consecutive_reconnect_failures += 1
-                    if consecutive_reconnect_failures >= max_consecutive_reconnect_failures:
-                        print(f"[主程式] 連續 {consecutive_reconnect_failures} 次重連失敗,"
-                              f"停止自動重連,請人工檢查狀況！")
-                        break
+            # 定時重啟模組: 腳本執行過久,強制重啟遊戲維持穩定性
+            if cfg.restart_interval_minutes > 0 and \
+                    (time.time() - last_restart_time) >= cfg.restart_interval_minutes * 60:
+                print(f"[主程式] 腳本已執行超過 {cfg.restart_interval_minutes} 分鐘,強制重啟遊戲...")
+                keyup_all()
+                last_player_pos = None
+                last_healer_pos = None
+                last_restart_time = time.time()
+                if not reconnect_tracker.run(reconnector):
+                    break
                 continue
 
             print("=" * 50)
@@ -1773,25 +1867,10 @@ if __name__ == "__main__":
 
                 if consecutive_player_not_found >= cfg.max_consecutive_player_not_found:
                     print(f"[主程式] 連續 {consecutive_player_not_found} 次偵測不到玩家位置,"
-                          f"視為畫面異常,強制重啟遊戲...")
-                    # 診斷用
-                    save_debug_snapshot(win, game_img, (0, 0), cfg, path=f"debug_game_screen_10noplayer_{tick_count}.png")
-                    
+                          f"發出提示音等待人工處理...")
+                    save_debug_snapshot(win, game_img, (0, 0), cfg, path=f"debug_game_screen_noplayer_{tick_count}.png")
                     keyup_all()
-                    success = reconnector.handle_reconnect()
-
-                    last_player_pos = None
-                    last_healer_pos = None
-                    consecutive_player_not_found = 0
-
-                    if success:
-                        consecutive_reconnect_failures = 0
-                    else:
-                        consecutive_reconnect_failures += 1
-                        if consecutive_reconnect_failures >= max_consecutive_reconnect_failures:
-                            print(f"[主程式] 連續 {consecutive_reconnect_failures} 次重連失敗,"
-                                  f"停止自動重連,請人工檢查狀況！")
-                            break
+                    alert_throttler.maybe_alert(cfg)
                     continue
 
                 keyup_all()
