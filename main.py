@@ -77,7 +77,8 @@ class BotConfig:
        'image/石頭人.png',
        'image/猴子.png',
        'image/藍蘑菇.png',
-       'image/藍蘑菇2.png',
+       'image/藍蘑菇1.png',
+       'image/蝴蝶精.png',
     ])
     player_threshold: float = 0.6
     attack_distance_threshold: int = 220
@@ -178,7 +179,7 @@ class BotConfig:
 
     # 同一層至少要巡邏(觸碰邊界折返)幾次,才允許嘗試爬繩換到下一層,
     # 一趟「從左邊界走到右邊界」算 1 次折返,一個來回(左->右->左)則是 2 次。
-    min_patrol_bounces_before_climb: int = 2
+    min_patrol_bounces_before_climb: int = 1
 
     # ---- 其他玩家 / 隊友偵測 (換平台前避讓用) ----
     # 目標平台小地圖上若偵測到其他玩家或隊友的色點,本次就放棄換到那一層,留在原地繼續巡邏。
@@ -893,11 +894,13 @@ class RopeTraverser:
         self.last_grab_attempt_time: float = 0.0
         self.pose_lost_streak: int = 0   # "climb" 階段連續幾次沒偵測到爬繩姿勢
         self.last_transition_time: float = 0.0
-        self.last_rope_x: Optional[int] = None
+        # 用 (lower_layer, upper_layer) 而不是 x 判斷「同一條連接」——flash_jump 類型沒有 x
+        # (一律是 None),多條 flash_jump 連接如果只比較 x 會被誤判成同一條。
+        self.last_rope_key: Optional[Tuple[int, int]] = None
 
     def can_start(self, rope: RopeConfig) -> bool:
-        """避免同一條繩索剛完成動作就立刻來回爬"""
-        if self.last_rope_x == rope.x and \
+        """避免同一個連接剛完成動作就立刻來回爬"""
+        if self.last_rope_key == (rope.lower_layer, rope.upper_layer) and \
                 (time.time() - self.last_transition_time) < self.cfg.min_seconds_between_climbs:
             return False
         return True
@@ -911,7 +914,8 @@ class RopeTraverser:
         action_label = {"up": "爬繩上樓", "down": "掉落下樓"}[direction]
         if direction == "up" and rope.connection_type == "flash_jump":
             action_label = "瞬間移動上樓"
-        print(f"[跨平台爬繩模組] 開始{action_label} (繩索 X={rope.x}, "
+        x_label = f"X={rope.x}" if rope.x is not None else "無需對齊 X 座標"
+        print(f"[跨平台爬繩模組] 開始{action_label} ({x_label}, "
               f"平台 {rope.lower_layer} <-> {rope.upper_layer})")
         self.active = True
         self.rope = rope
@@ -945,7 +949,7 @@ class RopeTraverser:
     def _finish(self, reason=""):
         keyup_all(('left', 'right', self.cfg.climb_up_key, self.cfg.drop_down_key))
         if self.rope is not None:
-            self.last_rope_x = self.rope.x
+            self.last_rope_key = (self.rope.lower_layer, self.rope.upper_layer)
         self.last_transition_time = time.time()
         self.active = False
         self.rope = None
@@ -1293,9 +1297,21 @@ def build_debug_image(win, screen, template_path='image/mo_00065.png', threshold
             # 兩端平台都有設定時,只畫兩層之間的那一段;缺一邊就整條貫穿畫面方便排查設定問題
             ry1 = lower_range[0] if lower_range else 0
             ry2 = upper_range[1] if upper_range else img_h
-            cv2.line(debug_img, (rope.x, ry1), (rope.x, ry2), (0, 0, 255), 1)
-            cv2.putText(debug_img, f"{rope.lower_layer}<->{rope.upper_layer}",
-                        (rope.x + 4, (ry1 + ry2) // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 1)
+            label = f"{rope.lower_layer}<->{rope.upper_layer}"
+
+            if rope.connection_type == "flash_jump":
+                # 瞬間移動沒有確切 X 座標,改畫出上層平台的觸發範圍(它自己的左右邊界)
+                target_layer = next((l for l in layers if l.index == rope.upper_layer), None)
+                if target_layer is not None:
+                    cv2.rectangle(debug_img, (target_layer.left_bound, ry1),
+                                  (target_layer.right_bound, ry2), (255, 0, 255), 1)
+                    cv2.putText(debug_img, f"{label} (flash_jump)",
+                                (target_layer.left_bound + 4, (ry1 + ry2) // 2),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 0, 255), 1)
+            else:
+                cv2.line(debug_img, (rope.x, ry1), (rope.x, ry2), (0, 0, 255), 1)
+                cv2.putText(debug_img, label, (rope.x + 4, (ry1 + ry2) // 2),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 1)
 
     # 其他玩家 / 隊友偵測校正輔助: 把實際偵測到的色點畫出來,方便排查誤判
     if show_other_players:
@@ -1815,7 +1831,6 @@ if __name__ == "__main__":
         RopeConfig(x=85, lower_layer=0, upper_layer=1),
 
         # 中間層平台(1) <-> 上層平台(2): 瞬間移動技能(方向鍵上 + flash_jump_key),
-        # 不需要對齊 X 座標,只要落在平台2的 left_bound/right_bound 範圍內就會觸發
         RopeConfig(lower_layer=1, upper_layer=2, connection_type="flash_jump"),
 
         # 上層平台(2) <-> 最上層平台(3): 同樣用瞬間移動技能
