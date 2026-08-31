@@ -62,19 +62,19 @@ class BotConfig:
       # 'image/骷髏狗2.png',
       # 'image/木面人.png',
       # 'image/骷髏士兵1.png',
-       'image/紅螃蟹.png',
-       'image/青螃蟹.png',
-       'image/海龜.png',
+      # 'image/紅螃蟹.png',
+      # 'image/青螃蟹.png',
+      # 'image/海龜.png',
+       'image/石頭人.png',
+       'image/猴子.png',
+       'image/藍蘑菇.png',
+       'image/藍蘑菇2.png',
     ])
     player_threshold: float = 0.6
     attack_distance_threshold: int = 220
     move_center: int = 764
 
-    # 骷髏狗
-    #minimap_left_bound: int = 60
-    #minimap_right_bound: int = 100
-
-    # 木面
+    # 默認地圖邊界
     minimap_left_bound: int = 55
     minimap_right_bound: int = 70
 
@@ -95,18 +95,16 @@ class BotConfig:
     player_search_margin: int = 150
     healer_search_margin: int = 200
 
-    # 連續幾次都偵測不到玩家標籤,視為畫面異常(例如卡在某個對話框、視窗跑掉),需要人工排除
+    # 連續幾次都偵測不到玩家標籤,視為畫面異常
     max_consecutive_player_not_found: int = 8
 
     # 連續幾次都找不到遊戲視窗(例如遊戲當掉、視窗被關閉),強制進入重啟流程
     max_consecutive_window_not_found: int = 10
 
-    # ---- 警示音模組 (需要人工排除的狀況,例如 LIE DETECTOR 檢測、長時間偵測不到玩家) ----
-    # 這兩種狀況都無法/不應該自動處理(LIE DETECTOR 需要真人動滑鼠配合,偵測不到玩家原因不明),
-    # 所以改成發出提示音等待人工處理,而不是自動強制重啟遊戲。
+    # ---- 警示音模組 ----
     alert_beep_frequency: int = 1000            # 提示音頻率 (Hz)
     alert_beep_duration_ms: int = 400           # 單次提示音長度 (毫秒)
-    alert_repeat_interval_seconds: float = 1  # 狀況持續存在時,每隔幾秒重複提醒一次
+    alert_repeat_interval_seconds: float = 1    # 狀況持續存在時,每隔幾秒重複提醒一次
     
     # ---- debug ----
     debug: bool = True
@@ -118,7 +116,7 @@ class BotConfig:
     enable_healer_follow: bool = False   # 關閉時完全不搜尋補師、視為找不到補師,退回一般邊界巡邏
     healer_tag_path: str = 'image/healer_tag.png'
     healer_tag_threshold: float = 0.6
-    healer_y_tolerance: int = 100   # Y座標差在此範圍內視為同一層
+    healer_y_tolerance: int = 80   # Y座標差在此範圍內視為同一層
     healer_x_dead_zone: int = 100   # X座標差在此範圍內視為已到達補師旁邊,不再移動
 
     # ---- 斷線重連模組 ----
@@ -128,7 +126,7 @@ class BotConfig:
     # 腳本執行過久,遊戲用戶端可能累積一些用其他方式難以排查的異常狀況(記憶體洩漏、連線不穩等),
     # 定時強制重啟遊戲有助於維持穩定性。設為 0 或負數停用。計時從腳本啟動、以及每次重連
     # (不論是斷線觸發或這個定時觸發)完成時重新開始算。
-    restart_interval_minutes: float = 33.0
+    restart_interval_minutes: float = 0.0
 
     # ---- 跨平台爬繩模組 ----
     # 定義地圖有哪些平台(遊戲視窗絕對像素座標的 Y 範圍 + 該層左右巡邏邊界,見 LayerConfig 說明)。
@@ -539,7 +537,7 @@ def find_monsters_in_range(monster_positions, player_pos, distance_threshold):
     return [
         (mx, my) for (mx, my) in monster_positions
         if np.hypot(mx - px, my - py) <= distance_threshold
-        and abs(my-py) < 100    # 木面 @@@
+        and abs(my-py) < 80
     ]
 
 
@@ -1664,7 +1662,7 @@ class ReconnectManager:
         self._click_ratio(game_win, self.rc.server_name_ratio, "server_name")
         time.sleep(2.0)
 
-
+        '''
         # 展開頻道選單,捲動到最下面
         self._click_ratio(game_win, self.rc.channel_scrollbar_ratio, "scroll_to_bottom")
         time.sleep(2.0)
@@ -1674,16 +1672,18 @@ class ReconnectManager:
         time.sleep(0.5)
         pydirectinput.press('down')
         time.sleep(0.5)
-        pydirectinput.press('right')
+        pydirectinput.press('down')
         time.sleep(0.5)
-        pydirectinput.press('right')
+        pydirectinput.press('down')
+        time.sleep(0.5)
+        pydirectinput.press('down')
         time.sleep(2.0)
         '''
 
         # 點擊頻道 ch.3
         self._click_ratio(game_win, self.rc.channel_area_ratio_ch3, "channel_area")
         time.sleep(2.0)
-        '''
+
 
         # 進入伺服器
         self._click_ratio(game_win, self.rc.channel_enter_ratio, "channel_area")
@@ -1737,7 +1737,8 @@ if __name__ == "__main__":
     # 這張地圖的繩索都在平台左側,爬到頂端容易卡在邊緣被怪物撞下去,爬繩時額外持續按右鍵往內側移動
     cfg.climb_drift_key = 'right'
 
-
+    '''
+    # 木面地圖
     cfg.layers = [
         # index=0: 最下層平台
         LayerConfig(index=0, y_min=168, y_max=173, left_bound=40, right_bound=110),
@@ -1758,8 +1759,66 @@ if __name__ == "__main__":
         RopeConfig(x=56, lower_layer=1, upper_layer=2),
     
     ]
+    '''
+    
+    # 石巨人地圖
+
+    cfg.layers = [
+        # index=0: 最下層平台
+        LayerConfig(index=0, y_min=148, y_max=153, left_bound=31, right_bound=105),
+    
+        # index=1: 中間層平台
+        LayerConfig(index=1, y_min=138, y_max=141, left_bound=55, right_bound=92),
+        
+        # index=2: 上層平台
+        LayerConfig(index=2, y_min=132, y_max=135, left_bound=55, right_bound=88),
+        
+        # index=2: 最上層平台
+        LayerConfig(index=3, y_min=127, y_max=130, left_bound=62, right_bound=82),
+    
+    ]
+    
+    cfg.ropes = [
+        # 下平台(0) <-> 中間層平台(1) 的繩索
+        RopeConfig(x=85, lower_layer=0, upper_layer=1),
+    
+    ]
 
 
+    '''
+    # 螃蟹地圖
+    cfg.layers = [
+        # index=0: 地面(沙灘),左右兩條分岔的共同起點
+        LayerConfig(index=0, y_min=167, y_max=173, left_bound=28, right_bound=117),
+    
+        # index=1: 左側下層平台
+        LayerConfig(index=1, y_min=145, y_max=149, left_bound=39, right_bound=55),
+    
+        # index=2: 左側上層平台
+        LayerConfig(index=2, y_min=127, y_max=131, left_bound=43, right_bound=48),
+        
+        # index=1: 右側下層平台
+        LayerConfig(index=3, y_min=145, y_max=149, left_bound=91, right_bound=108),
+    
+        # index=2: 右側上層平台
+        LayerConfig(index=4, y_min=127, y_max=131, left_bound=95, right_bound=100),
+    
+    ]
+    
+    cfg.ropes = [
+        # 地面 <-> 左下
+        RopeConfig(x=52, lower_layer=0, upper_layer=1),
+    
+        # 左下 <-> 左上
+        RopeConfig(x=43, lower_layer=1, upper_layer=2),
+    
+        # 地面 <-> 右下
+        RopeConfig(x=88, lower_layer=0, upper_layer=3),
+        
+        # 右下 <-> 右上
+        RopeConfig(x=103, lower_layer=3, upper_layer=4),
+    ]
+    '''
 
     # 初始化重連模組
     reconnector = ReconnectManager(rc_cfg)
@@ -1933,11 +1992,6 @@ if __name__ == "__main__":
             if cfg.layers:
                 if current_layer is None:
                     print(f"警告: 小地圖 Y={abs_mm_y} 沒有對應的 layers 設定,暫用預設邊界巡邏")
-            else:
-                # 木面@@@ (未設定 cfg.layers 時,維持原本的單層邊界切換寫法)
-                if abs_mm_y >= 150:
-                    cfg.minimap_right_bound = 100
-                    cfg.minimap_left_bound = 40
 
             if cfg.debug:
                 debug_img = build_debug_image_from_cfg(win, game_img, player_target_pos, cfg)
