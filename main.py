@@ -60,8 +60,11 @@ class BotConfig:
     monsters_threshold: float = 0.82
     template_paths: List[str] = field(default_factory=lambda: [
       # 'image/骷髏狗2.png',
-       'image/木面人.png',
+      # 'image/木面人.png',
       # 'image/骷髏士兵1.png',
+       'image/紅螃蟹.png',
+       'image/青螃蟹.png',
+       'image/海龜.png',
     ])
     player_threshold: float = 0.6
     attack_distance_threshold: int = 220
@@ -106,7 +109,7 @@ class BotConfig:
     alert_repeat_interval_seconds: float = 1  # 狀況持續存在時,每隔幾秒重複提醒一次
     
     # ---- debug ----
-    debug: bool = False
+    debug: bool = True
     debug_show_window: bool = False   # debug 時是否即時顯示監看視窗
     debug_save_image: bool = True   # debug 時是否額外存成檔案
     
