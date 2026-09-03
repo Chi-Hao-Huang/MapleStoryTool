@@ -69,16 +69,16 @@ class BotConfig:
     monsters_threshold: float = 0.82
     template_paths: List[str] = field(default_factory=lambda: [
       # 'image/骷髏狗2.png',
-      # 'image/木面人.png',
+       'image/木面人.png',
       # 'image/骷髏士兵1.png',
       # 'image/紅螃蟹.png',
       # 'image/青螃蟹.png',
       # 'image/海龜.png',
-       'image/石頭人.png',
-       'image/猴子.png',
-       'image/藍蘑菇.png',
-       'image/藍蘑菇1.png',
-       'image/蝴蝶精.png',
+      # 'image/石頭人.png',
+      # 'image/猴子.png',
+      # 'image/藍蘑菇.png',
+      # 'image/藍蘑菇1.png',
+      # 'image/蝴蝶精.png',
     ])
     player_threshold: float = 0.6
     attack_distance_threshold: int = 220
@@ -96,6 +96,11 @@ class BotConfig:
     single_attack_key: str = 'shift'
     aoe_attack_key: str = 'a'
     aoe_monster_count: int = 2  # 範圍內達到幾隻怪就改用範圍攻擊
+    
+    # ---- debug ----
+    debug: bool = False
+    debug_show_window: bool = False   # debug 時是否即時顯示監看視窗
+    debug_save_image: bool = True   # debug 時是否額外存成檔案
 
     # ---- 效能相關設定 ----
     # 每隔多少個 tick 重新搶一次遊戲視窗焦點 (0 = 只在啟動時搶一次,之後不再搶)
@@ -115,11 +120,6 @@ class BotConfig:
     alert_beep_frequency: int = 1000            # 提示音頻率 (Hz)
     alert_beep_duration_ms: int = 400           # 單次提示音長度 (毫秒)
     alert_repeat_interval_seconds: float = 1    # 狀況持續存在時,每隔幾秒重複提醒一次
-    
-    # ---- debug ----
-    debug: bool = True
-    debug_show_window: bool = False   # debug 時是否即時顯示監看視窗
-    debug_save_image: bool = True   # debug 時是否額外存成檔案
     
 
     # ---- 補師跟隨模組 ----
@@ -179,7 +179,7 @@ class BotConfig:
 
     # 同一層至少要巡邏(觸碰邊界折返)幾次,才允許嘗試爬繩換到下一層,
     # 一趟「從左邊界走到右邊界」算 1 次折返,一個來回(左->右->左)則是 2 次。
-    min_patrol_bounces_before_climb: int = 1
+    min_patrol_bounces_before_climb: int = 2
 
     # ---- 其他玩家 / 隊友偵測 (換平台前避讓用) ----
     # 目標平台小地圖上若偵測到其他玩家或隊友的色點,本次就放棄換到那一層,留在原地繼續巡邏。
@@ -1785,7 +1785,7 @@ if __name__ == "__main__":
     # 這張地圖的繩索都在平台左側,爬到頂端容易卡在邊緣被怪物撞下去,爬繩時額外持續按右鍵往內側移動
     cfg.climb_drift_key = 'right'
 
-    '''
+
     # 木面地圖
     cfg.layers = [
         # index=0: 最下層平台
@@ -1801,10 +1801,10 @@ if __name__ == "__main__":
     
     cfg.ropes = [
         # 右下平台(0) <-> 中間層平台(1) 的繩索
-        RopeConfig(x=52, lower_layer=0, upper_layer=1),
+        RopeConfig(x=51, lower_layer=0, upper_layer=1),
     
         # 中間層平台(1) <-> 上層平台(2) 的繩索
-        RopeConfig(x=56, lower_layer=1, upper_layer=2),
+        RopeConfig(x=55, lower_layer=1, upper_layer=2),
     
     ]
     '''
@@ -1836,7 +1836,7 @@ if __name__ == "__main__":
         # 上層平台(2) <-> 最上層平台(3): 同樣用瞬間移動技能
         RopeConfig(lower_layer=2, upper_layer=3, connection_type="flash_jump"),
     ]
-
+    '''
 
     '''
     # 螃蟹地圖
