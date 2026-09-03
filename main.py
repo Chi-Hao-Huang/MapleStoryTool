@@ -44,14 +44,23 @@ class LayerConfig:
 @dataclass
 class RopeConfig:
     """
-    繩索設定:連接的下層/上層 index(對應 LayerConfig.index),以及繩索所在的 X 座標。
+    平台連接設定:連接的下層/上層 index(對應 LayerConfig.index),以及連接的類型:
 
-    X 座標同樣是「遊戲視窗絕對像素座標」(見 LayerConfig 說明),不是小地圖裁切區域內部的相對值,
+    - "rope"(預設):實體繩索,往上爬需要先對齊繩索的確切 X 座標(見 x 說明)才能抓到繩子。
+    - "flash_jump":角色具備的瞬間移動技能(方向鍵上 + flash_jump_key),不需要對齊到某個確切點,
+      只要 X 座標落在上層平台自己的 left_bound/right_bound 範圍內就能觸發瞬間往上移動,
+      跟往下掉落一樣是瞬間動作、不用精準對位。
+
+    往下掉落(兩種類型皆同)一律不需要對齊,平台上任何位置都能觸發,見 RopeTraverser 說明。
+
+    x 座標是「遊戲視窗絕對像素座標」(見 LayerConfig 說明),不是小地圖裁切區域內部的相對值,
     也不受角色移動/畫面捲動影響(因為是從小地圖上的色點換算而來,小地圖本身固定不動)。
+    "flash_jump" 類型不需要對齊特定 X 座標,此欄位會被忽略,可留 None 不填。
     """
-    x: int
     lower_layer: int
     upper_layer: int
+    x: Optional[int] = None
+    connection_type: str = "rope"   # "rope" 或 "flash_jump"
 
 
 @dataclass
@@ -60,21 +69,22 @@ class BotConfig:
     monsters_threshold: float = 0.82
     template_paths: List[str] = field(default_factory=lambda: [
       # 'image/骷髏狗2.png',
-      # 'image/木面人.png',
+       'image/木面人.png',
       # 'image/骷髏士兵1.png',
-       'image/紅螃蟹.png',
-       'image/青螃蟹.png',
-       'image/海龜.png',
+      # 'image/紅螃蟹.png',
+      # 'image/青螃蟹.png',
+      # 'image/海龜.png',
+      # 'image/石頭人.png',
+      # 'image/猴子.png',
+      # 'image/藍蘑菇.png',
+      # 'image/藍蘑菇1.png',
+      # 'image/蝴蝶精.png',
     ])
     player_threshold: float = 0.6
     attack_distance_threshold: int = 220
     move_center: int = 764
 
-    # 骷髏狗
-    #minimap_left_bound: int = 60
-    #minimap_right_bound: int = 100
-
-    # 木面
+    # 默認地圖邊界
     minimap_left_bound: int = 55
     minimap_right_bound: int = 70
 
@@ -86,6 +96,11 @@ class BotConfig:
     single_attack_key: str = 'shift'
     aoe_attack_key: str = 'a'
     aoe_monster_count: int = 2  # 範圍內達到幾隻怪就改用範圍攻擊
+    
+    # ---- debug ----
+    debug: bool = False
+    debug_show_window: bool = False   # debug 時是否即時顯示監看視窗
+    debug_save_image: bool = True   # debug 時是否額外存成檔案
 
     # ---- 效能相關設定 ----
     # 每隔多少個 tick 重新搶一次遊戲視窗焦點 (0 = 只在啟動時搶一次,之後不再搶)
@@ -95,30 +110,23 @@ class BotConfig:
     player_search_margin: int = 150
     healer_search_margin: int = 200
 
-    # 連續幾次都偵測不到玩家標籤,視為畫面異常(例如卡在某個對話框、視窗跑掉),需要人工排除
+    # 連續幾次都偵測不到玩家標籤,視為畫面異常
     max_consecutive_player_not_found: int = 8
 
     # 連續幾次都找不到遊戲視窗(例如遊戲當掉、視窗被關閉),強制進入重啟流程
     max_consecutive_window_not_found: int = 10
 
-    # ---- 警示音模組 (需要人工排除的狀況,例如 LIE DETECTOR 檢測、長時間偵測不到玩家) ----
-    # 這兩種狀況都無法/不應該自動處理(LIE DETECTOR 需要真人動滑鼠配合,偵測不到玩家原因不明),
-    # 所以改成發出提示音等待人工處理,而不是自動強制重啟遊戲。
+    # ---- 警示音模組 ----
     alert_beep_frequency: int = 1000            # 提示音頻率 (Hz)
     alert_beep_duration_ms: int = 400           # 單次提示音長度 (毫秒)
-    alert_repeat_interval_seconds: float = 1  # 狀況持續存在時,每隔幾秒重複提醒一次
-    
-    # ---- debug ----
-    debug: bool = True
-    debug_show_window: bool = False   # debug 時是否即時顯示監看視窗
-    debug_save_image: bool = True   # debug 時是否額外存成檔案
+    alert_repeat_interval_seconds: float = 1    # 狀況持續存在時,每隔幾秒重複提醒一次
     
 
     # ---- 補師跟隨模組 ----
     enable_healer_follow: bool = False   # 關閉時完全不搜尋補師、視為找不到補師,退回一般邊界巡邏
     healer_tag_path: str = 'image/healer_tag.png'
     healer_tag_threshold: float = 0.6
-    healer_y_tolerance: int = 100   # Y座標差在此範圍內視為同一層
+    healer_y_tolerance: int = 80   # Y座標差在此範圍內視為同一層
     healer_x_dead_zone: int = 100   # X座標差在此範圍內視為已到達補師旁邊,不再移動
 
     # ---- 斷線重連模組 ----
@@ -128,7 +136,7 @@ class BotConfig:
     # 腳本執行過久,遊戲用戶端可能累積一些用其他方式難以排查的異常狀況(記憶體洩漏、連線不穩等),
     # 定時強制重啟遊戲有助於維持穩定性。設為 0 或負數停用。計時從腳本啟動、以及每次重連
     # (不論是斷線觸發或這個定時觸發)完成時重新開始算。
-    restart_interval_minutes: float = 33.0
+    restart_interval_minutes: float = 0.0
 
     # ---- 跨平台爬繩模組 ----
     # 定義地圖有哪些平台(遊戲視窗絕對像素座標的 Y 範圍 + 該層左右巡邏邊界,見 LayerConfig 說明)。
@@ -141,6 +149,9 @@ class BotConfig:
     climb_up_key: str = 'up'
     drop_down_key: str = 'down'
     drop_jump_key: str = 'alt'
+    # 瞬間移動技能鍵(方向鍵上 + 這個鍵),用於 RopeConfig.connection_type == "flash_jump" 的平台連接。
+    # 跟 drop_jump_key 是不同的按鍵(例如職業的瞬間移動技能另外綁在空白鍵,不是跳躍鍵本身)。
+    flash_jump_key: str = 'space'
 
     rope_x_tolerance: int = 4          # 判定「已對齊繩索正下方/正上方」的小地圖 X 容忍度(像素)
     layer_reach_tolerance: int = 1     # 判定「已爬到目標層」的小地圖 Y 容忍度(像素)
@@ -539,7 +550,7 @@ def find_monsters_in_range(monster_positions, player_pos, distance_threshold):
     return [
         (mx, my) for (mx, my) in monster_positions
         if np.hypot(mx - px, my - py) <= distance_threshold
-        and abs(my-py) < 100    # 木面 @@@
+        and abs(my-py) < 80
     ]
 
 
@@ -833,22 +844,11 @@ def find_layer_by_y(abs_mm_y, layers: List[LayerConfig]) -> Optional[LayerConfig
     return None
 
 
-def find_rope_near_x(abs_mm_x, layer_index, ropes: List[RopeConfig], tolerance) -> Optional[RopeConfig]:
-    """在目前平台中,找出 X 座標(遊戲視窗絕對像素座標,見 RopeConfig 說明)落在容忍範圍內、
-    且與這一層相連(上層或下層皆可)的繩索。用於「往上爬」的情境——抓繩需要對齊繩索的確切位置。"""
-    for rope in ropes:
-        if layer_index not in (rope.lower_layer, rope.upper_layer):
-            continue
-        if abs(abs_mm_x - rope.x) <= tolerance:
-            return rope
-    return None
-
-
 def find_rope_down_from_layer(layer_index, ropes: List[RopeConfig]) -> Optional[RopeConfig]:
     """
     找出可以從這一層直接往下掉落到下層的繩索連接,不檢查 X 座標。
     掉落(下+跳躍鍵)是瞬間動作,平台上任何位置都能直接掉到下層,不像往上爬繩需要先對齊繩索位置;
-    有些繩索的 X 座標甚至落在下層平台自己的巡邏邊界之外,單靠 find_rope_near_x 永遠不會被觸發到。
+    有些繩索的 X 座標甚至落在下層平台自己的巡邏邊界之外,單靠對齊 X 座標永遠不會被觸發到。
     """
     for rope in ropes:
         if rope.upper_layer == layer_index:
@@ -863,20 +863,23 @@ class RopeTraverser:
     一旦呼叫 start() 啟動,接下來每個 tick 都改由 step() 接管移動判斷,依序經過:
 
     - "align": 左右移動,對齊繩索的 X 座標(遊戲視窗絕對像素座標,見 RopeConfig 說明)。
-    - "grab" (只有往上爬、且 cfg.use_jump_to_grab_rope 開啟時才會經過):
+      只有 connection_type == "rope" 的往上爬才會經過這個階段;"flash_jump" 連接跟往下掉落
+      一樣是瞬間動作,由呼叫端(主迴圈)在啟動前就先確認位置條件符合,透過 skip_align=True
+      直接跳到 "climb" 階段觸發,見 start() 說明。
+    - "grab" (只有 connection_type == "rope" 往上爬、且 cfg.use_jump_to_grab_rope 開啟時才會經過):
       對齊後改用「方向鍵 + 跳躍鍵」斜向跳起、同時按住爬繩鍵去咬繩,
       比站在原地直接按爬繩鍵更容易真的抓到(咬繩子有機率咬不到,斜跳能多涵蓋一點橫向距離)。
       每隔 grab_retry_interval 秒用 climbing_pose_template 比對確認是否已經抓到繩子,
       沒抓到就再跳一次,重試達 grab_max_retries 次仍失敗就放棄這次爬繩。
-    - "climb": 已確認在爬繩(或掉落已觸發),持續按著爬繩鍵,直到連續
+    - "climb": 往下掉落、或往上的 "flash_jump" 連接,都是觸發後立刻視為完成(瞬間動作)。
+      只有 connection_type == "rope" 的往上爬會持續按著爬繩鍵,直到連續
       climb_pose_lost_confirm_ticks 次都偵測不到爬繩姿勢才視為爬完(而不是用小地圖 Y 座標推測——
       小地圖太小,Y 範圍常常在角色實際到達平台前就先進入判定範圍,導致提前放開爬繩鍵卡在半路)。
-      往下掉落是瞬間動作,對齊後按一次即完成,不會經過 grab 階段。
       若設定了 cfg.climb_drift_key,確認抓到繩子起就會額外持續按著這個方向鍵直到爬完放開,
       讓角色到達平台時順勢往內側移動一點,避免落在繩索正上方的平台邊緣被怪物撞下去。
 
-    start() 也可以傳入 skip_align=True(僅用於 direction="down"),跳過 "align" 直接觸發掉落——
-    掉落是瞬間動作,平台上任何位置都能觸發,不需要先走到繩索的 X 座標才能掉下去。
+    start() 也可以傳入 skip_align=True,跳過 "align" 直接觸發動作:往下掉落任何位置都能觸發,
+    "flash_jump" 連接則是只要在上層平台範圍內就能觸發,兩者都不需要先走到某個確切 X 座標。
     """
 
     def __init__(self, cfg: BotConfig):
@@ -891,22 +894,28 @@ class RopeTraverser:
         self.last_grab_attempt_time: float = 0.0
         self.pose_lost_streak: int = 0   # "climb" 階段連續幾次沒偵測到爬繩姿勢
         self.last_transition_time: float = 0.0
-        self.last_rope_x: Optional[int] = None
+        # 用 (lower_layer, upper_layer) 而不是 x 判斷「同一條連接」——flash_jump 類型沒有 x
+        # (一律是 None),多條 flash_jump 連接如果只比較 x 會被誤判成同一條。
+        self.last_rope_key: Optional[Tuple[int, int]] = None
 
     def can_start(self, rope: RopeConfig) -> bool:
-        """避免同一條繩索剛完成動作就立刻來回爬"""
-        if self.last_rope_x == rope.x and \
+        """避免同一個連接剛完成動作就立刻來回爬"""
+        if self.last_rope_key == (rope.lower_layer, rope.upper_layer) and \
                 (time.time() - self.last_transition_time) < self.cfg.min_seconds_between_climbs:
             return False
         return True
 
     def start(self, rope: RopeConfig, direction: str, skip_align: bool = False):
         """
-        skip_align=True 用於「往下掉落且不需要對齊 X 座標」的情境:掉落是瞬間動作,
-        平台上任何位置都能觸發,不用像往上爬繩一樣先走到繩索的確切位置。
+        skip_align=True 用於不需要對齊 X 座標的情境:往下掉落(任何位置都能觸發),
+        或 connection_type == "flash_jump" 的瞬間移動連接(只要在上層平台範圍內就能觸發)。
+        兩者都是瞬間動作,不用像實體繩索往上爬一樣先走到確切位置。
         """
-        action_label = "爬繩上樓" if direction == "up" else "掉落下樓"
-        print(f"[跨平台爬繩模組] 開始{action_label} (繩索 X={rope.x}, "
+        action_label = {"up": "爬繩上樓", "down": "掉落下樓"}[direction]
+        if direction == "up" and rope.connection_type == "flash_jump":
+            action_label = "瞬間移動上樓"
+        x_label = f"X={rope.x}" if rope.x is not None else "無需對齊 X 座標"
+        print(f"[跨平台爬繩模組] 開始{action_label} ({x_label}, "
               f"平台 {rope.lower_layer} <-> {rope.upper_layer})")
         self.active = True
         self.rope = rope
@@ -916,9 +925,12 @@ class RopeTraverser:
         self.grab_attempts = 0
         self.pose_lost_streak = 0
 
-        if skip_align and direction == "down":
+        if skip_align:
             self.phase = "climb"
-            self._perform_drop()
+            if direction == "down":
+                self._perform_drop()
+            else:
+                self._perform_flash_jump()
         else:
             self.phase = "align"
 
@@ -928,10 +940,16 @@ class RopeTraverser:
         time.sleep(0.05)
         pydirectinput.press(self.cfg.drop_jump_key, _pause=False)
 
+    def _perform_flash_jump(self):
+        """按住上鍵再點一下瞬間移動鍵,觸發瞬間往上移動到上層平台(瞬間動作,不需對齊 X 座標)"""
+        pydirectinput.keyDown(self.cfg.climb_up_key, _pause=False)
+        time.sleep(0.05)
+        pydirectinput.press(self.cfg.flash_jump_key, _pause=False)
+
     def _finish(self, reason=""):
         keyup_all(('left', 'right', self.cfg.climb_up_key, self.cfg.drop_down_key))
         if self.rope is not None:
-            self.last_rope_x = self.rope.x
+            self.last_rope_key = (self.rope.lower_layer, self.rope.upper_layer)
         self.last_transition_time = time.time()
         self.active = False
         self.rope = None
@@ -1019,7 +1037,12 @@ class RopeTraverser:
                 self._finish("掉落動作已觸發")
                 return True
 
-            # 用爬繩姿勢來判斷有沒有爬完
+            if self.rope.connection_type == "flash_jump":
+                # 瞬間移動也是瞬間動作,觸發後就視為完成,由下個 tick 重新判斷所在平台
+                self._finish("瞬間移動已觸發")
+                return True
+
+            # 用爬繩姿勢來判斷有沒有爬完(僅適用於實體繩索)
             if player_screen_gray is not None:
                 still_climbing = is_player_climbing(
                     player_screen_gray, player_pos,
@@ -1148,17 +1171,24 @@ class StuckWatchdog:
 
 class LayerSweepDirector:
     """
-    決定跨平台移動時該往上還是往下,讓角色像電梯一樣完整掃過所有平台
-    (例如 0 -> 1 -> 2 -> 1 -> 0 -> 1 -> 2 -> ...),而不是因為「往下掉落不需要對齊、
-    永遠比往上爬容易觸發」,就一直卡在下面幾層來回移動、永遠上不到最上層。
+    決定跨平台移動時該往上還是往下,讓角色像電梯一樣完整掃過所有平台,而不是因為
+    「往下掉落不需要對齊、永遠比往上爬容易觸發」,就一直卡在下面幾層來回移動、永遠上不到最上層。
 
     邏輯很單純(類似磁碟排程的 SCAN 演算法):目前往哪個方向走(up/down)就盡量繼續往那個方向走,
     直到那個方向已經沒有平台可以再移動(到頂或到底)才反過來。
-    這假設平台是像樓層一樣「一條線」排列、沒有分岔,符合目前地圖的接法。
+
+    地圖不一定是單純一條線排列 —— 一個平台可以同時連到多個「更上層」的平台(例如地面連接
+    左右兩側各自往上的兩條分岔路線)。has_up/has_down 只判斷「這個方向還有沒有平台可以走」,
+    不管有幾條分岔都算數,所以 SCAN 邏輯本身不受分岔影響;但「該挑哪一條分岔」由
+    pick_up_rope 另外用輪流(round-robin)方式決定,確保每個分岔都有機會被走到,
+    不會因為某條繩索剛好離平台巡邏路徑比較近,就永遠只走那一條、另一條分岔永遠去不到。
     """
 
     def __init__(self, initial_direction: str = "up"):
         self.direction = initial_direction
+        self._up_rope_cursor: dict = {}          # layer_index -> 上次選到的候選 index(輪流用)
+        self._pending_layer: Optional[int] = None
+        self._pending_target: Optional[RopeConfig] = None
 
     def decide(self, current_layer_index: int, ropes: List[RopeConfig]) -> str:
         """回傳這次應該嘗試的方向("up" 或 "down"),必要時會先反轉掃描方向"""
@@ -1171,6 +1201,33 @@ class LayerSweepDirector:
             self.direction = "up"
 
         return self.direction
+
+    def pick_up_rope(self, current_layer_index: int, ropes: List[RopeConfig]) -> Optional[RopeConfig]:
+        """
+        選出這一層要往上爬的目標繩索。只有一條往上的路就直接回傳它;有多條分岔時,
+        每次「重新選擇」(呼叫端在真的出發前都會沿用同一個選擇,見 clear_pending)
+        就輪流換下一條,確保所有分岔平均都會被走到。
+        """
+        if self._pending_layer != current_layer_index:
+            self._pending_layer = current_layer_index
+            self._pending_target = None
+
+        if self._pending_target is not None:
+            return self._pending_target
+
+        candidates = [r for r in ropes if r.lower_layer == current_layer_index]
+        if not candidates:
+            return None
+
+        cursor = (self._up_rope_cursor.get(current_layer_index, -1) + 1) % len(candidates)
+        self._up_rope_cursor[current_layer_index] = cursor
+        self._pending_target = candidates[cursor]
+        return self._pending_target
+
+    def clear_pending(self):
+        """實際開始爬繩(或放棄這次嘗試)後呼叫,下次到同一層要再重新判斷/輪到下一個分岔"""
+        self._pending_layer = None
+        self._pending_target = None
 
 
 # ---------------------------------------------------------
@@ -1240,9 +1297,21 @@ def build_debug_image(win, screen, template_path='image/mo_00065.png', threshold
             # 兩端平台都有設定時,只畫兩層之間的那一段;缺一邊就整條貫穿畫面方便排查設定問題
             ry1 = lower_range[0] if lower_range else 0
             ry2 = upper_range[1] if upper_range else img_h
-            cv2.line(debug_img, (rope.x, ry1), (rope.x, ry2), (0, 0, 255), 1)
-            cv2.putText(debug_img, f"{rope.lower_layer}<->{rope.upper_layer}",
-                        (rope.x + 4, (ry1 + ry2) // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 1)
+            label = f"{rope.lower_layer}<->{rope.upper_layer}"
+
+            if rope.connection_type == "flash_jump":
+                # 瞬間移動沒有確切 X 座標,改畫出上層平台的觸發範圍(它自己的左右邊界)
+                target_layer = next((l for l in layers if l.index == rope.upper_layer), None)
+                if target_layer is not None:
+                    cv2.rectangle(debug_img, (target_layer.left_bound, ry1),
+                                  (target_layer.right_bound, ry2), (255, 0, 255), 1)
+                    cv2.putText(debug_img, f"{label} (flash_jump)",
+                                (target_layer.left_bound + 4, (ry1 + ry2) // 2),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 0, 255), 1)
+            else:
+                cv2.line(debug_img, (rope.x, ry1), (rope.x, ry2), (0, 0, 255), 1)
+                cv2.putText(debug_img, label, (rope.x + 4, (ry1 + ry2) // 2),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 1)
 
     # 其他玩家 / 隊友偵測校正輔助: 把實際偵測到的色點畫出來,方便排查誤判
     if show_other_players:
@@ -1641,7 +1710,7 @@ class ReconnectManager:
         self._click_ratio(game_win, self.rc.server_name_ratio, "server_name")
         time.sleep(2.0)
 
-
+        '''
         # 展開頻道選單,捲動到最下面
         self._click_ratio(game_win, self.rc.channel_scrollbar_ratio, "scroll_to_bottom")
         time.sleep(2.0)
@@ -1651,16 +1720,18 @@ class ReconnectManager:
         time.sleep(0.5)
         pydirectinput.press('down')
         time.sleep(0.5)
-        pydirectinput.press('right')
+        pydirectinput.press('down')
         time.sleep(0.5)
-        pydirectinput.press('right')
+        pydirectinput.press('down')
+        time.sleep(0.5)
+        pydirectinput.press('down')
         time.sleep(2.0)
         '''
 
         # 點擊頻道 ch.3
         self._click_ratio(game_win, self.rc.channel_area_ratio_ch3, "channel_area")
         time.sleep(2.0)
-        '''
+
 
         # 進入伺服器
         self._click_ratio(game_win, self.rc.channel_enter_ratio, "channel_area")
@@ -1715,6 +1786,7 @@ if __name__ == "__main__":
     cfg.climb_drift_key = 'right'
 
 
+    # 木面地圖
     cfg.layers = [
         # index=0: 最下層平台
         LayerConfig(index=0, y_min=168, y_max=173, left_bound=40, right_bound=110),
@@ -1729,14 +1801,77 @@ if __name__ == "__main__":
     
     cfg.ropes = [
         # 右下平台(0) <-> 中間層平台(1) 的繩索
-        RopeConfig(x=52, lower_layer=0, upper_layer=1),
+        RopeConfig(x=51, lower_layer=0, upper_layer=1),
     
         # 中間層平台(1) <-> 上層平台(2) 的繩索
-        RopeConfig(x=56, lower_layer=1, upper_layer=2),
+        RopeConfig(x=55, lower_layer=1, upper_layer=2),
     
     ]
+    '''
+    
+    # 石巨人地圖
 
+    cfg.layers = [
+        # index=0: 最下層平台
+        LayerConfig(index=0, y_min=148, y_max=153, left_bound=31, right_bound=105),
+    
+        # index=1: 中間層平台
+        LayerConfig(index=1, y_min=138, y_max=141, left_bound=55, right_bound=92),
+        
+        # index=2: 上層平台
+        LayerConfig(index=2, y_min=132, y_max=135, left_bound=55, right_bound=88),
+        
+        # index=2: 最上層平台
+        LayerConfig(index=3, y_min=127, y_max=130, left_bound=62, right_bound=82),
+    
+    ]
+    
+    cfg.ropes = [
+        # 下平台(0) <-> 中間層平台(1) 的繩索
+        RopeConfig(x=85, lower_layer=0, upper_layer=1),
 
+        # 中間層平台(1) <-> 上層平台(2): 瞬間移動技能(方向鍵上 + flash_jump_key),
+        RopeConfig(lower_layer=1, upper_layer=2, connection_type="flash_jump"),
+
+        # 上層平台(2) <-> 最上層平台(3): 同樣用瞬間移動技能
+        RopeConfig(lower_layer=2, upper_layer=3, connection_type="flash_jump"),
+    ]
+    '''
+
+    '''
+    # 螃蟹地圖
+    cfg.layers = [
+        # index=0: 地面(沙灘),左右兩條分岔的共同起點
+        LayerConfig(index=0, y_min=167, y_max=173, left_bound=28, right_bound=117),
+    
+        # index=1: 左側下層平台
+        LayerConfig(index=1, y_min=145, y_max=149, left_bound=39, right_bound=55),
+    
+        # index=2: 左側上層平台
+        LayerConfig(index=2, y_min=127, y_max=131, left_bound=43, right_bound=48),
+        
+        # index=1: 右側下層平台
+        LayerConfig(index=3, y_min=145, y_max=149, left_bound=91, right_bound=108),
+    
+        # index=2: 右側上層平台
+        LayerConfig(index=4, y_min=127, y_max=131, left_bound=95, right_bound=100),
+    
+    ]
+    
+    cfg.ropes = [
+        # 地面 <-> 左下
+        RopeConfig(x=52, lower_layer=0, upper_layer=1),
+    
+        # 左下 <-> 左上
+        RopeConfig(x=43, lower_layer=1, upper_layer=2),
+    
+        # 地面 <-> 右下
+        RopeConfig(x=88, lower_layer=0, upper_layer=3),
+        
+        # 右下 <-> 右上
+        RopeConfig(x=103, lower_layer=3, upper_layer=4),
+    ]
+    '''
 
     # 初始化重連模組
     reconnector = ReconnectManager(rc_cfg)
@@ -1910,11 +2045,6 @@ if __name__ == "__main__":
             if cfg.layers:
                 if current_layer is None:
                     print(f"警告: 小地圖 Y={abs_mm_y} 沒有對應的 layers 設定,暫用預設邊界巡邏")
-            else:
-                # 木面@@@ (未設定 cfg.layers 時,維持原本的單層邊界切換寫法)
-                if abs_mm_y >= 150:
-                    cfg.minimap_right_bound = 100
-                    cfg.minimap_left_bound = 40
 
             if cfg.debug:
                 debug_img = build_debug_image_from_cfg(win, game_img, player_target_pos, cfg)
@@ -1946,17 +2076,46 @@ if __name__ == "__main__":
                     # 用 LayerSweepDirector 決定這次該往上還是往下,讓角色完整掃過所有平台,
                     direction = layer_sweep_director.decide(current_layer.index, cfg.ropes)
                     skip_align = (direction == "down")
+                    in_position = (direction == "down")   # 往下不需要對齊,一律視為已就位
+                    walk_dir = None
 
                     if direction == "down":
                         # 往下掉落不需要對齊繩索 X 座標,平台上任何位置都能觸發
                         rope = find_rope_down_from_layer(current_layer.index, cfg.ropes)
                     else:
-                        # 往上爬需要先對齊繩索的確切 X 座標
-                        rope = find_rope_near_x(abs_mm_x, current_layer.index, cfg.ropes, cfg.rope_x_tolerance)
-                        if rope is not None and rope.lower_layer != current_layer.index:
-                            rope = None  # find_rope_near_x 也會配對到下層繩索,這裡只要「往上」的
+                        # 往上:主動選定目標連接(平台若有分岔,輪流挑選確保每條分岔都會走到),
+                        # 在就位之前主動朝它移動,而不是被動等一般巡邏折返剛好經過那個位置。
+                        rope = layer_sweep_director.pick_up_rope(current_layer.index, cfg.ropes)
 
-                    if rope is not None and rope_traverser.can_start(rope):
+                        if rope is not None and rope.connection_type == "flash_jump":
+                            # 瞬間移動: 不用對齊確切位置,只要在上層平台的左右邊界範圍內就能觸發
+                            skip_align = True
+                            target_layer_cfg = next(
+                                (l for l in cfg.layers if l.index == rope.upper_layer), None
+                            )
+                            if target_layer_cfg is None:
+                                print(f"警告: flash_jump 連接的目標平台 {rope.upper_layer} "
+                                      f"在 cfg.layers 中找不到對應設定,略過這次嘗試")
+                                in_position = False
+                            elif abs_mm_x < target_layer_cfg.left_bound:
+                                walk_dir = "right"
+                            elif abs_mm_x > target_layer_cfg.right_bound:
+                                walk_dir = "left"
+                            else:
+                                in_position = True
+                        elif rope is not None:
+                            # 實體繩索: 需要對齊繩索的確切 X 座標
+                            if abs(abs_mm_x - rope.x) <= cfg.rope_x_tolerance:
+                                in_position = True
+                            else:
+                                walk_dir = "right" if rope.x > abs_mm_x else "left"
+
+                    if rope is not None and not in_position and walk_dir is not None:
+                        keyup_all()
+                        pydirectinput.keyDown(walk_dir, _pause=False)
+                        move_direction = walk_dir
+                        handled_by_rope = True
+                    elif rope is not None and in_position and rope_traverser.can_start(rope):
                         target_layer_index = rope.upper_layer if direction == "up" else rope.lower_layer
 
                         target_occupied = False
@@ -1978,6 +2137,7 @@ if __name__ == "__main__":
                             keyup_all()
                             rope_traverser.start(rope, direction, skip_align=skip_align)
                             patrol_lap_tracker.reset()
+                            layer_sweep_director.clear_pending()
                             handled_by_rope = True
 
                 if not handled_by_rope:
