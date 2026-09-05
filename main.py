@@ -79,6 +79,9 @@ class BotConfig:
       # 'image/藍蘑菇.png',
       # 'image/藍蘑菇1.png',
       # 'image/蝴蝶精.png',
+      # 'image/章魚.png',
+      # 'image/章魚1.png',
+      # 'image/章魚2.png',
     ])
     player_threshold: float = 0.6
     attack_distance_threshold: int = 220
@@ -1807,8 +1810,33 @@ if __name__ == "__main__":
         RopeConfig(x=55, lower_layer=1, upper_layer=2),
     
     ]
+
+    
+    '''
+    # 三眼章魚地圖
+    cfg.layers = [
+        # index=0: 最下層平台
+        LayerConfig(index=0, y_min=157, y_max=168, left_bound=80, right_bound=91),
+    
+        # index=1: 中間層平台
+        LayerConfig(index=1, y_min=144, y_max=149, left_bound=47, right_bound=97),
+    
+        # index=2: 上層平台
+        LayerConfig(index=2, y_min=128, y_max=132, left_bound=56, right_bound=96),
+    
+    ]
+    
+    cfg.ropes = [
+        # 右下平台(0) <-> 中間層平台(1) 的繩索
+        RopeConfig(x=80, lower_layer=0, upper_layer=1),
+    
+        # 中間層平台(1) <-> 上層平台(2) 的繩索
+        RopeConfig(x=56, lower_layer=1, upper_layer=2),
+    
+    ]
     '''
     
+    '''
     # 石巨人地圖
 
     cfg.layers = [
