@@ -27,12 +27,7 @@ import winsound
 @dataclass
 class LayerConfig:
     """
-    平台設定:Y 座標落在 [y_min, y_max] 視為在這一層,並套用這一層專屬的左右巡邏邊界。
-    index 只是平台代號,供 RopeConfig 參照連接關係用。
-
-    這裡的座標是透過小地圖上的色點換算出來的「遊戲視窗絕對像素座標」,
-    和 debug_game_screen.png(或任何一張完整遊戲視窗截圖)裡的像素座標是同一個座標系,
-    可以直接用圖片檢視器在截圖上點選色點讀出像素座標填入,不需要另外換算小地圖裁切區域內部的相對值。
+    平台設定:Y 座標落在 [y_min, y_max] 視為在這一層,並套用這一層專屬的左右巡邏邊界
     """
     index: int
     y_min: int
@@ -46,15 +41,11 @@ class RopeConfig:
     """
     平台連接設定:連接的下層/上層 index(對應 LayerConfig.index),以及連接的類型:
 
-    - "rope"(預設):實體繩索,往上爬需要先對齊繩索的確切 X 座標(見 x 說明)才能抓到繩子。
+    - "rope"(預設):實體繩索,往上爬需要先對齊繩索的確切 X 座標才能抓到繩子。
     - "flash_jump":角色具備的瞬間移動技能(方向鍵上 + flash_jump_key),不需要對齊到某個確切點,
       只要 X 座標落在上層平台自己的 left_bound/right_bound 範圍內就能觸發瞬間往上移動,
       跟往下掉落一樣是瞬間動作、不用精準對位。
 
-    往下掉落(兩種類型皆同)一律不需要對齊,平台上任何位置都能觸發,見 RopeTraverser 說明。
-
-    x 座標是「遊戲視窗絕對像素座標」(見 LayerConfig 說明),不是小地圖裁切區域內部的相對值,
-    也不受角色移動/畫面捲動影響(因為是從小地圖上的色點換算而來,小地圖本身固定不動)。
     "flash_jump" 類型不需要對齊特定 X 座標,此欄位會被忽略,可留 None 不填。
     """
     lower_layer: int
@@ -739,8 +730,6 @@ def find_colored_dots_on_minimap(minimap_crop_bgr, lower_hsv, upper_hsv,
 def get_other_player_minimap_positions(game_img, win):
     """
     回傳小地圖上其他玩家的絕對座標 (相對視窗左上) 列表。
-    其他玩家的色點固定顯示為 #EE0000 (紅),是遊戲寫死的顏色、不會隨地圖或帳號改變,
-    比照 find_player_on_minimap 對自己黃點的作法,直接寫死在這裡不放進 BotConfig。
     """
     minimap_region = get_minimap_region(win)
     minimap_crop = crop_region(game_img, minimap_region, win)
@@ -762,8 +751,6 @@ def get_other_player_minimap_positions(game_img, win):
 def get_teammate_minimap_positions(game_img, win):
     """
     回傳小地圖上隊友的絕對座標 (相對視窗左上) 列表。
-    隊友的色點固定顯示為 #FF7700 (橘),是遊戲寫死的顏色、不會隨地圖或帳號改變,
-    比照 find_player_on_minimap 對自己黃點的作法,直接寫死在這裡不放進 BotConfig。
     """
     minimap_region = get_minimap_region(win)
     minimap_crop = crop_region(game_img, minimap_region, win)
@@ -850,8 +837,6 @@ def find_layer_by_y(abs_mm_y, layers: List[LayerConfig]) -> Optional[LayerConfig
 def find_rope_down_from_layer(layer_index, ropes: List[RopeConfig]) -> Optional[RopeConfig]:
     """
     找出可以從這一層直接往下掉落到下層的繩索連接,不檢查 X 座標。
-    掉落(下+跳躍鍵)是瞬間動作,平台上任何位置都能直接掉到下層,不像往上爬繩需要先對齊繩索位置;
-    有些繩索的 X 座標甚至落在下層平台自己的巡邏邊界之外,單靠對齊 X 座標永遠不會被觸發到。
     """
     for rope in ropes:
         if rope.upper_layer == layer_index:
@@ -912,7 +897,6 @@ class RopeTraverser:
         """
         skip_align=True 用於不需要對齊 X 座標的情境:往下掉落(任何位置都能觸發),
         或 connection_type == "flash_jump" 的瞬間移動連接(只要在上層平台範圍內就能觸發)。
-        兩者都是瞬間動作,不用像實體繩索往上爬一樣先走到確切位置。
         """
         action_label = {"up": "爬繩上樓", "down": "掉落下樓"}[direction]
         if direction == "up" and rope.connection_type == "flash_jump":
@@ -1174,8 +1158,7 @@ class StuckWatchdog:
 
 class LayerSweepDirector:
     """
-    決定跨平台移動時該往上還是往下,讓角色像電梯一樣完整掃過所有平台,而不是因為
-    「往下掉落不需要對齊、永遠比往上爬容易觸發」,就一直卡在下面幾層來回移動、永遠上不到最上層。
+    決定跨平台移動時該往上還是往下,讓角色完整掃過所有平台
 
     邏輯很單純(類似磁碟排程的 SCAN 演算法):目前往哪個方向走(up/down)就盡量繼續往那個方向走,
     直到那個方向已經沒有平台可以再移動(到頂或到底)才反過來。
@@ -1245,7 +1228,7 @@ def build_debug_image(win, screen, template_path='image/mo_00065.png', threshold
                        ropes: Optional[List['RopeConfig']] = None,
                        show_other_players: bool = False):
     """
-    根據傳入的 screen(已經截好的 BGRA 畫面) 繪製除錯用的標記與疊圖,回傳 debug_img。
+    根據傳入的 screen 繪製除錯用的標記與疊圖,回傳 debug_img。
     debug 模式著重可讀性而非效能,因此這裡仍用全螢幕搜尋,不套用 ROI 加速。
     """
     hp_region, mp_region = get_hp_mp_region(win)
