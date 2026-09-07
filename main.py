@@ -147,7 +147,7 @@ class BotConfig:
     # 跟 drop_jump_key 是不同的按鍵(例如職業的瞬間移動技能另外綁在空白鍵,不是跳躍鍵本身)。
     flash_jump_key: str = 'space'
 
-    rope_x_tolerance: int = 4          # 判定「已對齊繩索正下方/正上方」的小地圖 X 容忍度(像素)
+    rope_x_tolerance: int = 3          # 判定「已對齊繩索正下方/正上方」的小地圖 X 容忍度(像素)
     layer_reach_tolerance: int = 1     # 判定「已爬到目標層」的小地圖 Y 容忍度(像素)
     climb_timeout_seconds: float = 6.0        # 爬繩逾時保護,避免卡在半路不動
     min_seconds_between_climbs: float = 4.0   # 同一條繩索避免立刻來回爬,兩次使用間至少間隔幾秒
