@@ -3,7 +3,7 @@
 本專案是一個基於 Python 開發的《新楓之谷》自動化輔助腳本。利用 **OpenCV** 影像識別、**MSS** 高速螢幕擷取以及 **pydirectinput** 模擬底層 DirectInput 按鍵輸入，實現角色自動跑圖、怪物偵測攻擊、補師跟隨、定時技能施放、小地圖邊界判斷，並在偵測到斷線時自動執行重新登入流程。
 
 - **`main.py`**：完整功能版本，本文件其餘內容都是在說明這個檔案。
-- **`main_min.py`**：最小資源版本，只保留「斷線偵測」與「定時重啟」兩個功能，直接匯入 `main.py` 的 `ReconnectManager`/`ReconnectConfig` 重用同一套重連邏輯，不做怪物偵測、位置辨識、小地圖巡邏、跨平台爬繩等任何需要持續截圖比對的工作。每個檢查週期只截一次圖、只跑一次斷線特徵比對，並用 `MinimalBotConfig.check_interval_seconds`（預設 2 秒）拉開檢查間隔，CPU/GPU 占用遠低於完整版，適合純粹想維持連線、不需要掛機打怪的情境。
+- **`main_min.py`**：最小資源版本，只保留「斷線偵測」與「定時重啟」兩個功能，不做怪物偵測、位置辨識、小地圖巡邏、跨平台爬繩等任何需要持續截圖比對的工作。每個檢查週期只截一次圖、只跑一次斷線特徵比對，並用 `MinimalBotConfig.check_interval_seconds`（預設 2 秒）拉開檢查間隔，CPU/GPU 占用遠低於完整版，適合純粹想維持連線、不需要掛機打怪的情境。斷線偵測與強制關閉遊戲進程直接匯入 `main.py` 的 `ReconnectManager`/`ReconnectConfig` 重用；但重啟時的登入方式是這個檔案自己的邏輯 `run_reconnect`：啟動本機登入啟動器 exe（輸入授權碼登入的那種，例如私服客戶端常見的小視窗）→ 點擊「登录」按鈕 → 等待遊戲視窗出現，而不是 `main.py` 預設的 Chrome 網頁登入流程。需要在 `MinimalBotConfig` 填入 `launcher_exe_path`（啟動器執行檔路徑）、`launcher_window_title`（啟動器視窗標題）、`launcher_login_btn_ratio`（「登录」按鈕相對視窗寬高的比例，可比照 `main.py` 的 `debug_click_screenshots` 校正方式自行測量）。
 
 ---
 
