@@ -1429,17 +1429,6 @@ class ReconnectConfig:
     chrome_window_title: str = 'Google Chrome'
     reconnect_url: str = 'https://maplestoryclassic.beanfun.com/Main'  # 找不到 Chrome 視窗時的備援啟動網址
 
-    # ---- 本機啟動器登入流程 ----
-    # 有些環境是用本機的啟動器 exe(輸入授權碼登入)取代 Chrome 網頁登入,啟用後
-    # _run_reconnect_once 會先執行這個流程,取代原本開 Chrome 點登入網頁的那幾個步驟;
-    # 之後「等伺服器選擇畫面出現 -> 選服 -> 選頻道 -> 進入遊戲」的部分兩種流程共用,不受影響。
-    use_local_launcher: bool = False
-    local_launcher_exe_path: str = r'C:\path\to\Client.exe'  # 請改成實際的啟動器執行檔路徑
-    local_launcher_window_title: str = 'MapleStoryClassic'   # 啟動器視窗標題(如附圖所示)
-    local_launcher_login_btn_ratio: Tuple[float, float] = (0.5, 0.5)  # 「登录」按鈕相對視窗寬高的比例
-    local_launcher_wait_seconds: float = 10.0  # 執行 exe 後,等待啟動器視窗出現的逾時秒數
-    local_launcher_after_login_wait_seconds: float = 3.0  # 點擊登入後,等待遊戲視窗開始啟動的秒數
-
     # 重試策略
     max_reconnect_attempts: int = 3
     retry_backoff_seconds: float = 15.0   # 一輪嘗試失敗後,休息多久再試下一輪
@@ -1638,8 +1627,13 @@ class ReconnectManager:
 
     # ---------------- 主流程 ----------------
 
-    def _login_via_chrome(self) -> bool:
-        """透過 Chrome 開啟官網並點擊登入流程。失敗回傳 False。"""
+    def _run_reconnect_once(self):
+        """
+        執行一輪完整的重連流程。任何一步失敗會提早回傳 False,
+        由外層 handle_reconnect 決定要不要重試。
+        """
+        self.force_close_game()
+
         chrome_win = self._get_chrome_window(activate=True)
         if chrome_win is None:
             print("[斷線重連模組] 找不到 Chrome 視窗,嘗試啟動瀏覽器...")
@@ -1665,7 +1659,7 @@ class ReconnectManager:
         chrome_win = self._get_chrome_window() or chrome_win
         self._click_ratio(chrome_win, self.rc.gamapass_btn_ratio, "gamapass_login")
         time.sleep(3.5)
-
+        
         # Step 4: 點選帳號
         chrome_win = self._get_chrome_window() or chrome_win
         self._click_ratio(chrome_win, self.rc.account_entry_ratio, "account_entry")
@@ -1686,51 +1680,7 @@ class ReconnectManager:
             except Exception as e:
                 print(f"[斷線重連模組] 關閉 Chrome 視窗失敗: {e}")
 
-        return True
-
-    def _login_via_local_launcher(self) -> bool:
-        """
-        啟動本機登入啟動器 exe(輸入授權碼登入的那種),點擊「登录」按鈕觸發遊戲啟動,
-        取代 Chrome 網頁登入流程。失敗回傳 False。
-        """
-        launcher_win = get_window(title_exact=self.rc.local_launcher_window_title)
-        if launcher_win is None:
-            print("[斷線重連模組] 啟動本機登入啟動器...")
-            try:
-                subprocess.Popen([self.rc.local_launcher_exe_path])
-            except Exception as e:
-                print(f"[斷線重連模組] 啟動本機登入啟動器失敗: {e}")
-                return False
-
-            start_time = time.time()
-            while time.time() - start_time < self.rc.local_launcher_wait_seconds:
-                launcher_win = get_window(title_exact=self.rc.local_launcher_window_title)
-                if launcher_win is not None:
-                    break
-                time.sleep(0.5)
-
-        if launcher_win is None:
-            print("[斷線重連模組] 逾時仍未看到本機登入啟動器視窗,本輪嘗試失敗")
-            return False
-
-        activate_window(launcher_win)
-        time.sleep(0.5)
-        self._click_ratio(launcher_win, self.rc.local_launcher_login_btn_ratio, "local_launcher_login")
-        time.sleep(self.rc.local_launcher_after_login_wait_seconds)
-        return True
-
-    def _run_reconnect_once(self):
-        """
-        執行一輪完整的重連流程。任何一步失敗會提早回傳 False,
-        由外層 handle_reconnect 決定要不要重試。
-        """
-        self.force_close_game()
-
-        login_ok = self._login_via_local_launcher() if self.rc.use_local_launcher else self._login_via_chrome()
-        if not login_ok:
-            return False
-
-        # 輪詢直到伺服器選擇畫面真的出現為止 (不論用哪種方式登入,這部分共用)
+        # 輪詢直到伺服器選擇畫面真的出現為止
         if not self.wait_for_game_server_page(timeout=90.0):
             print("[斷線重連模組] 逾時仍未看到伺服器選擇畫面,本輪嘗試失敗")
             return False

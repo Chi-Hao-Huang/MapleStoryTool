@@ -37,8 +37,7 @@
 
 7. **斷線重連模組 (Reconnect Module)**
    - 透過模板比對持續偵測畫面是否出現斷線通知 (`is_disconnected`)。
-   - 偵測到斷線後自動：強制關閉舊的遊戲進程 (`force_close_game`) → 登入（見下方兩種登入方式）→ 等待伺服器選擇畫面出現 → 選伺服器、選頻道、進入遊戲。
-   - **兩種登入方式**：`_login_via_chrome`（預設）開啟/喚醒 Chrome 並依比例座標點擊登入官網、gamapass 登入、選擇角色；`_login_via_local_launcher` 則是啟動本機的授權碼登入啟動器 exe（例如私服客戶端常見的那種輸入授權碼登入的小視窗），點擊「登录」按鈕後觸發遊戲啟動。由 `cfg.use_local_launcher` 切換，兩種方式共用後面「等伺服器選擇畫面 → 選服選頻道 → 進遊戲」的流程。本機啟動器方式需要設定 `local_launcher_exe_path`（啟動器執行檔路徑）、`local_launcher_window_title`（啟動器視窗標題）、`local_launcher_login_btn_ratio`（「登录」按鈕相對視窗寬高的比例，建議搭配 `debug_click_screenshots` 校正）。
+   - 偵測到斷線後自動：強制關閉舊的遊戲進程 (`force_close_game`) → 開啟/喚醒 Chrome 並依比例座標點擊登入官網、gamapass 登入、選擇角色 → 等待伺服器選擇畫面出現 → 選伺服器、選頻道、進入遊戲。
    - 具備重試機制（`max_reconnect_attempts` 輪、每輪間隔 `retry_backoff_seconds` 秒），連續失敗達門檻會自動停止腳本以避免無限重試，並提示需要人工介入。
    - 所有點擊座標皆以「目標視窗寬高比例」而非桌面絕對座標計算，換解析度時較不易失準；開啟 `debug_click_screenshots` 可在每次點擊前存一張標記十字準心的截圖，方便校正比例。
    - **`ReconnectAttemptTracker`**：把「呼叫 `handle_reconnect`、依成功/失敗更新連續失敗計數、失敗太多次就停止主迴圈」這段邏輯獨立出來，供斷線偵測、定時重啟、找不到視窗這幾個觸發點共用，避免每個觸發點各自重複一份。
