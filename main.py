@@ -92,7 +92,7 @@ class BotConfig:
     aoe_monster_count: int = 2  # 範圍內達到幾隻怪就改用範圍攻擊
     
     # ---- debug ----
-    debug: bool = False
+    debug: bool = True
     debug_show_window: bool = False   # debug 時是否即時顯示監看視窗
     debug_save_image: bool = True   # debug 時是否額外存成檔案
 
@@ -147,8 +147,8 @@ class BotConfig:
     # 跟 drop_jump_key 是不同的按鍵(例如職業的瞬間移動技能另外綁在空白鍵,不是跳躍鍵本身)。
     flash_jump_key: str = 'space'
 
-    rope_x_tolerance: int = 3          # 判定「已對齊繩索正下方/正上方」的小地圖 X 容忍度(像素)
-    layer_reach_tolerance: int = 1     # 判定「已爬到目標層」的小地圖 Y 容忍度(像素)
+    rope_x_tolerance: int = 1          # 判定「已對齊繩索正下方/正上方」的小地圖 X 容忍度(像素)
+    layer_reach_tolerance: int = 0     # 判定「已爬到目標層」的小地圖 Y 容忍度(像素)
     climb_timeout_seconds: float = 6.0        # 爬繩逾時保護,避免卡在半路不動
     min_seconds_between_climbs: float = 4.0   # 同一條繩索避免立刻來回爬,兩次使用間至少間隔幾秒
     post_transition_cooldown: float = 1.5     # 完成爬繩/掉落後,暫停幾秒讓動作播放完畢再重新判斷巡邏
@@ -157,7 +157,7 @@ class BotConfig:
     grab_x_tolerance: int = 10          # 改用斜跳抓繩時,允許比 rope_x_tolerance 更寬鬆的對齊容忍度
     grab_hold_seconds: float = 0.15     # 起跳瞬間持續按住方向鍵的時間,製造橫向位移去咬繩
     grab_retry_interval: float = 0.6    # 還沒偵測到爬繩姿勢時,每隔多久重新嘗試跳一次抓繩
-    grab_max_retries: int = 3           # 抓繩最多重試幾次,超過就放棄這次爬繩,交還一般巡邏判斷
+    grab_max_retries: int = 3           # 抓繩最多重試幾次,超過就放棄這次爬繩ㄈ,交還一般巡邏判斷
 
     # 爬繩姿勢範本比對: 用來確認「真的已經抓到繩子在爬」,也用來判斷「是否已經爬完」,
     climbing_pose_template: str = 'image/climbing_pose.png'
@@ -173,7 +173,7 @@ class BotConfig:
 
     # 同一層至少要巡邏(觸碰邊界折返)幾次,才允許嘗試爬繩換到下一層,
     # 一趟「從左邊界走到右邊界」算 1 次折返,一個來回(左->右->左)則是 2 次。
-    min_patrol_bounces_before_climb: int = 2
+    min_patrol_bounces_before_climb: int = 1
 
     # ---- 其他玩家 / 隊友偵測 (換平台前避讓用) ----
     # 目標平台小地圖上若偵測到其他玩家或隊友的色點,本次就放棄換到那一層,留在原地繼續巡邏。
@@ -278,13 +278,13 @@ def get_hp_mp_region(win):
     要看 debug 視窗調整
     """
     hp_region = {
-        "left": win.left + 511,
-        "top": win.top + 780,
-        "width": 105,
-        "height": 16
+        "left": win.left + 473,
+        "top": win.top + 776,
+        "width": 167,
+        "height": 19
     }
     mp_region = {
-        "left": hp_region['left'] + 108,
+        "left": hp_region['left'] + 168,
         "top": hp_region['top'],
         "width": hp_region['width'],
         "height": hp_region['height']
@@ -1778,7 +1778,7 @@ if __name__ == "__main__":
         LayerConfig(index=0, y_min=168, y_max=173, left_bound=40, right_bound=110),
     
         # index=1: 中間層平台
-        LayerConfig(index=1, y_min=150, y_max=154, left_bound=55, right_bound=80),
+        LayerConfig(index=1, y_min=150, y_max=154, left_bound=52, right_bound=80),
     
         # index=2: 上層平台
         LayerConfig(index=2, y_min=127, y_max=131, left_bound=42, right_bound=80),
