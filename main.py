@@ -59,8 +59,8 @@ class BotConfig:
     main_loop_sleep: float = 0.05
     monsters_threshold: float = 0.82
     template_paths: List[str] = field(default_factory=lambda: [
-      # 'image/骷髏狗2.png',
-       'image/木面人.png',
+       'image/骷髏狗2.png',
+      # 'image/木面人.png',
       # 'image/骷髏士兵1.png',
       # 'image/紅螃蟹.png',
       # 'image/青螃蟹.png',
@@ -92,7 +92,7 @@ class BotConfig:
     aoe_monster_count: int = 2  # 範圍內達到幾隻怪就改用範圍攻擊
     
     # ---- debug ----
-    debug: bool = True
+    debug: bool = False
     debug_show_window: bool = False   # debug 時是否即時顯示監看視窗
     debug_save_image: bool = True   # debug 時是否額外存成檔案
 
@@ -1771,7 +1771,7 @@ if __name__ == "__main__":
     # 這張地圖的繩索都在平台左側,爬到頂端容易卡在邊緣被怪物撞下去,爬繩時額外持續按右鍵往內側移動
     cfg.climb_drift_key = 'right'
 
-
+    '''
     # 木面地圖
     cfg.layers = [
         # index=0: 最下層平台
@@ -1793,7 +1793,16 @@ if __name__ == "__main__":
         RopeConfig(x=55, lower_layer=1, upper_layer=2),
     
     ]
+    '''
 
+
+    # 骷髏狗地圖
+    cfg.layers = [
+        # index=0: 最下層平台
+        LayerConfig(index=0, y_min=161, y_max=165, left_bound=35, right_bound=115),
+    
+    ]
+    
     
     '''
     # 三眼章魚地圖
